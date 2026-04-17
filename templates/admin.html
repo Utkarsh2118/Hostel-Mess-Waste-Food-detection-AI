@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Admin Dashboard | Hostel Mess AI</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body class="admin-page">
+  <div class="dashboard-layout">
+    <aside class="sidebar">
+      <div class="brand-block">
+        <i class="fa-solid fa-leaf"></i>
+        <div>
+          <h2>Mess AI</h2>
+          <p>Waste Manager</p>
+        </div>
+      </div>
+
+      <nav>
+        <button class="nav-link active" data-target="dashboard">
+          <i class="fa-solid fa-chart-line"></i> Dashboard
+        </button>
+        <button class="nav-link" data-target="add-data">
+          <i class="fa-solid fa-database"></i> Add Data
+        </button>
+        <button class="nav-link" data-target="prediction">
+          <i class="fa-solid fa-wand-magic-sparkles"></i> Prediction
+        </button>
+        <button class="nav-link" data-target="chatbot">
+          <i class="fa-solid fa-robot"></i> Chatbot
+        </button>
+      </nav>
+
+      <a class="logout-btn" href="{{ url_for('admin_logout') }}">
+        <i class="fa-solid fa-arrow-right-from-bracket"></i> Logout
+      </a>
+    </aside>
+
+    <main class="content-area">
+      <section id="dashboard" class="page-section active fade-up">
+        <header class="section-head">
+          <h1>Dashboard Overview</h1>
+          <p>AI-powered hostel mess waste analytics</p>
+        </header>
+
+        <div class="card-grid metrics-grid">
+          <article class="metric-card">
+            <span class="metric-icon"><i class="fa-solid fa-users"></i></span>
+            <h3>Total Students</h3>
+            <p id="totalStudents">0</p>
+          </article>
+
+          <article class="metric-card">
+            <span class="metric-icon"><i class="fa-solid fa-trash"></i></span>
+            <h3>Predicted Waste</h3>
+            <p id="predictedWaste">0 kg</p>
+          </article>
+
+          <article class="metric-card">
+            <span class="metric-icon"><i class="fa-solid fa-utensils"></i></span>
+            <h3>Suggested Food Qty</h3>
+            <p id="suggestedFood">0 kg</p>
+          </article>
+
+          <article class="metric-card">
+            <span class="metric-icon"><i class="fa-solid fa-chart-simple"></i></span>
+            <h3>Model Accuracy (R2)</h3>
+            <p id="modelAccuracy">0</p>
+          </article>
+        </div>
+
+        <article class="card chart-card">
+          <div class="card-title-row">
+            <h2>Waste Trend</h2>
+            <button id="refreshDataBtn" class="btn-secondary small">
+              <i class="fa-solid fa-rotate"></i> Refresh
+            </button>
+          </div>
+          <canvas id="wasteChart" height="90"></canvas>
+        </article>
+
+        <article class="card">
+          <div class="card-title-row">
+            <h2>Live Student Attendance</h2>
+            <button id="finalizeDayBtn" class="btn-primary small" type="button">
+              <i class="fa-solid fa-calendar-check"></i> Finalize Day
+            </button>
+          </div>
+          <p id="attendanceLiveMeta" class="helper-text">Today's student updates will appear here.</p>
+
+          <div class="card-grid attendance-mini-grid">
+            <article class="metric-card mini">
+              <h3>Entries</h3>
+              <p id="liveAttendanceCount">0</p>
+            </article>
+            <article class="metric-card mini">
+              <h3>Will Eat</h3>
+              <p id="liveWillEatCount">0</p>
+            </article>
+            <article class="metric-card mini">
+              <h3>Skip</h3>
+              <p id="liveSkipCount">0</p>
+            </article>
+            <article class="metric-card mini">
+              <h3>Pending Finalize</h3>
+              <p id="livePendingCount">0</p>
+            </article>
+          </div>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Student</th>
+                  <th>Meal</th>
+                  <th>Status</th>
+                  <th>Finalized</th>
+                </tr>
+              </thead>
+              <tbody id="attendanceTableBody"></tbody>
+            </table>
+          </div>
+
+          <p id="finalizeDayMsg" class="status-text"></p>
+        </article>
+
+        <article class="card">
+          <h2>Stored Dataset</h2>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Students</th>
+                  <th>Prepared (kg)</th>
+                  <th>Consumed (kg)</th>
+                  <th>Waste (kg)</th>
+                  <th>Weekend</th>
+                  <th>Exam Period</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody id="dataTableBody"></tbody>
+            </table>
+          </div>
+        </article>
+      </section>
+
+      <section id="add-data" class="page-section">
+        <header class="section-head">
+          <h1>Add Daily Data</h1>
+          <p>Feed historical records to improve model quality</p>
+        </header>
+
+        <article class="card">
+          <form id="addDataForm" class="form-grid two-col">
+            <label>
+              Students Present
+              <input type="number" name="students_present" min="1" required />
+            </label>
+
+            <label>
+              Prepared Food (kg)
+              <input type="number" name="prepared_kg" step="0.01" min="0" required />
+            </label>
+
+            <label>
+              Consumed Food (kg)
+              <input type="number" name="consumed_kg" step="0.01" min="0" required />
+            </label>
+
+            <label>
+              Waste (kg)
+              <input type="number" name="waste_kg" step="0.01" min="0" required />
+            </label>
+
+            <label>
+              Is Weekend?
+              <select name="is_weekend">
+                <option value="0">No</option>
+                <option value="1">Yes</option>
+              </select>
+            </label>
+
+            <label>
+              Is Exam Period?
+              <select name="is_exam_period">
+                <option value="0">No</option>
+                <option value="1">Yes</option>
+              </select>
+            </label>
+
+            <button class="btn-primary" type="submit">
+              <i class="fa-solid fa-plus"></i>
+              Add Record
+            </button>
+          </form>
+          <p id="addDataMessage" class="status-text"></p>
+        </article>
+      </section>
+
+      <section id="prediction" class="page-section">
+        <header class="section-head">
+          <h1>Prediction Engine</h1>
+          <p>Estimate waste and plan the right quantity</p>
+        </header>
+
+        <article class="card">
+          <form id="predictionForm" class="form-grid two-col">
+            <label>
+              Students Present
+              <input type="number" name="students_present" min="1" required />
+            </label>
+
+            <label>
+              Weekend?
+              <select name="is_weekend">
+                <option value="0">No</option>
+                <option value="1">Yes</option>
+              </select>
+            </label>
+
+            <label>
+              Exam Period?
+              <select name="is_exam_period">
+                <option value="0">No</option>
+                <option value="1">Yes</option>
+              </select>
+            </label>
+
+            <button type="submit" class="btn-secondary">
+              <i class="fa-solid fa-flask"></i>
+              Predict Waste
+            </button>
+          </form>
+
+          <div id="predictionLoader" class="loader hidden"></div>
+          <div id="predictionResult" class="result-panel hidden"></div>
+        </article>
+      </section>
+
+      <section id="chatbot" class="page-section">
+        <header class="section-head">
+          <h1>Admin AI Chatbot</h1>
+          <p>Ask: "How much waste for 120 students?". Bot replies show source tag: AI or RULE.</p>
+        </header>
+
+        <article class="card chatbot-card">
+          <div id="chatWindow" class="chat-window">
+            <div class="chat-bubble bot">Hello Admin! Ask about waste or food quantity.</div>
+          </div>
+
+          <form id="chatForm" class="chat-form">
+            <input
+              type="text"
+              id="chatInput"
+              placeholder="Type your question..."
+              autocomplete="off"
+              required
+            />
+            <button type="submit" class="btn-primary">
+              <i class="fa-solid fa-paper-plane"></i>
+            </button>
+          </form>
+        </article>
+      </section>
+    </main>
+  </div>
+
+  <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>
