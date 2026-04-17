@@ -1,0 +1,1 @@
+# Hostel-Mess-Waste-Food-detection-AI
