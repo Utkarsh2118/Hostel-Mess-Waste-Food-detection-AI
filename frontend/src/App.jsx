@@ -117,6 +117,7 @@ export default function App() {
   const [canMarkCurrentMeal, setCanMarkCurrentMeal] = useState(true);
   const [statusChoice, setStatusChoice] = useState("Will Eat");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [toast, setToast] = useState({ text: "", type: "success" });
 
   const runtime = useMemo(() => computeRuntime(now, mealSlots), [now, mealSlots]);
@@ -202,6 +203,7 @@ export default function App() {
       return;
     }
 
+    setIsLoggingIn(true);
     try {
       const payload = await postJSON("/api/student/login", { student_name: trimmedName, pin: trimmedPin });
       const loggedStudent = String(payload.student_name || trimmedName).trim();
@@ -213,6 +215,8 @@ export default function App() {
       setToast({ text: "Student login successful.", type: "success" });
     } catch (error) {
       setToast({ text: error.message || "Unable to login.", type: "error" });
+    } finally {
+      setIsLoggingIn(false);
     }
   }
 
@@ -366,8 +370,12 @@ export default function App() {
                 />
               </label>
 
-              <button type="submit" className="w-full rounded-xl bg-[#16a34a] px-4 py-3 text-sm font-bold text-white hover:brightness-95">
-                Login to Continue
+              <button
+                type="submit"
+                disabled={isLoggingIn}
+                className="w-full rounded-xl bg-[#16a34a] px-4 py-3 text-sm font-bold text-white hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {isLoggingIn ? "Logging in..." : "Login to Continue"}
               </button>
             </form>
 
@@ -377,6 +385,20 @@ export default function App() {
             </div>
           </section>
         </main>
+
+        {toast.text && (
+          <div className="fixed bottom-4 left-1/2 z-50 w-[92%] max-w-md -translate-x-1/2 animate-slideUp">
+            <div
+              className={`rounded-xl px-4 py-3 text-sm font-bold shadow-lg ${
+                toast.type === "error" ? "bg-rose-600 text-white" : "bg-emerald-700 text-white"
+              }`}
+              role="status"
+              aria-live="polite"
+            >
+              {toast.text}
+            </div>
+          </div>
+        )}
       </div>
     );
   }
