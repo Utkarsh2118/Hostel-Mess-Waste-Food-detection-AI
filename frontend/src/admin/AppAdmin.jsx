@@ -281,7 +281,7 @@ function AppShell({ children }) {
   );
 }
 
-function DashboardPage({ summary, records, attendance, menuData, onSaveMenu, onRefresh, onFinalize }) {
+function DashboardPage({ summary, records, attendance, menuData, onSaveMenu, onRefresh, onFinalize, onResetAttendance }) {
   const chartData = useMemo(() => {
     const rows = records.length ? records : fallbackRecords;
     return rows.slice(-7).map((row, index) => ({
@@ -314,6 +314,12 @@ function DashboardPage({ summary, records, attendance, menuData, onSaveMenu, onR
   const [menuMeal, setMenuMeal] = useState("Breakfast");
   const [menuItems, setMenuItems] = useState("");
   const [menuMsg, setMenuMsg] = useState("");
+  const [resetForm, setResetForm] = useState({
+    date: new Date().toISOString().slice(0, 10),
+    student_name: "",
+    meal_slot: "All",
+  });
+  const [resetMsg, setResetMsg] = useState("");
 
   useEffect(() => {
     const firstMeal = menuData?.menus ? Object.keys(menuData.menus)[0] : "Breakfast";
@@ -322,6 +328,10 @@ function DashboardPage({ summary, records, attendance, menuData, onSaveMenu, onR
       setMenuItems(selected);
     }
   }, [menuData, menuMeal]);
+
+  const studentNames = attendance?.student_names?.length
+    ? attendance.student_names
+    : Array.from(new Set((attendance?.records || []).map((row) => String(row.student_name || "").trim()).filter(Boolean)));
 
   const wasteHigh = Number(summary.predicted_waste || 0) > 8;
 
@@ -498,6 +508,79 @@ function DashboardPage({ summary, records, attendance, menuData, onSaveMenu, onR
         </form>
         {menuData?.updated_at && <p className="mt-2 text-xs text-slate-500">Last updated: {menuData.updated_at}</p>}
         {menuMsg && <p className="mt-1 text-sm font-semibold text-emerald-700">{menuMsg}</p>}
+      </div>
+
+      <div className="admin-card bg-white p-4">
+        <h3 className="mb-1 text-lg font-semibold">Reset Student Attendance Mark</h3>
+        <p className="mb-3 text-sm text-slate-500">Use this when a student marked the wrong preference and needs one retry.</p>
+        <form
+          className="grid gap-3 md:grid-cols-3"
+          onSubmit={async (event) => {
+            event.preventDefault();
+            if (!resetForm.student_name) {
+              setResetMsg("Please select a student.");
+              return;
+            }
+            try {
+              const payload = await onResetAttendance(resetForm);
+              setResetMsg(payload.message || "Attendance mark reset.");
+            } catch (error) {
+              setResetMsg(error.message || "Unable to reset attendance.");
+            }
+          }}
+        >
+          <label>
+            <span className="mb-1 block text-sm font-semibold text-slate-700">Date</span>
+            <input
+              type="date"
+              value={resetForm.date}
+              onChange={(e) => setResetForm((prev) => ({ ...prev, date: e.target.value }))}
+              className="w-full rounded-xl border border-slate-300 px-3 py-2 outline-none focus:border-emerald-500"
+              required
+            />
+          </label>
+
+          <label>
+            <span className="mb-1 block text-sm font-semibold text-slate-700">Student</span>
+            <input
+              list="admin-student-names"
+              value={resetForm.student_name}
+              onChange={(e) => setResetForm((prev) => ({ ...prev, student_name: e.target.value }))}
+              placeholder="Select student"
+              className="w-full rounded-xl border border-slate-300 px-3 py-2 outline-none focus:border-emerald-500"
+              required
+            />
+            <datalist id="admin-student-names">
+              {studentNames.map((name) => (
+                <option key={name} value={name} />
+              ))}
+            </datalist>
+          </label>
+
+          <label>
+            <span className="mb-1 block text-sm font-semibold text-slate-700">Meal</span>
+            <select
+              value={resetForm.meal_slot}
+              onChange={(e) => setResetForm((prev) => ({ ...prev, meal_slot: e.target.value }))}
+              className="w-full rounded-xl border border-slate-300 px-3 py-2 outline-none focus:border-emerald-500"
+            >
+              {["All", "Breakfast", "Lunch", "Tea", "Dinner"].map((meal) => (
+                <option key={meal} value={meal}>
+                  {meal}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <button
+            type="submit"
+            className="inline-flex items-center justify-center gap-2 rounded-xl bg-rose-600 px-4 py-3 font-semibold text-white hover:brightness-95 md:col-span-3"
+          >
+            <Trash2 size={16} />
+            Reset Attendance Mark
+          </button>
+        </form>
+        {resetMsg && <p className="mt-2 text-sm font-semibold text-slate-700">{resetMsg}</p>}
       </div>
     </div>
   );
@@ -1025,6 +1108,17 @@ export default function AppAdmin() {
     await refreshAll();
   };
 
+  const resetAttendance = async ({ date, student_name, meal_slot }) => {
+    const payload = await postJSON("/api/admin/attendance/reset", {
+      date,
+      student_name,
+      meal_slot,
+    });
+    setToast(payload.message || "Attendance reset");
+    await refreshAll();
+    return payload;
+  };
+
   return (
     <AppShell>
       {toast && (
@@ -1045,6 +1139,7 @@ export default function AppAdmin() {
               onSaveMenu={saveMenu}
               onRefresh={refreshAll}
               onFinalize={() => setModalOpen(true)}
+              onResetAttendance={resetAttendance}
             />
           }
         />

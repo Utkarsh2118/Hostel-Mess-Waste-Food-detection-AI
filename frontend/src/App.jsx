@@ -80,10 +80,28 @@ async function getJSON(url) {
   return response.json();
 }
 
+async function postJSON(url, body) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || payload.success === false) {
+    throw new Error(payload.message || "Request failed.");
+  }
+
+  return payload;
+}
+
 export default function App() {
   const [now, setNow] = useState(new Date());
   const [mealSlots, setMealSlots] = useState(FALLBACK_MEAL_SLOTS);
   const [students, setStudents] = useState([]);
+  const [studentSession, setStudentSession] = useState({ logged_in: false, student_name: "" });
+  const [loginName, setLoginName] = useState("");
+  const [loginPin, setLoginPin] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedStudent, setSelectedStudent] = useState("");
   const [mealCounts, setMealCounts] = useState({});
@@ -94,6 +112,9 @@ export default function App() {
   });
   const [history, setHistory] = useState([]);
   const [impactSavedKg, setImpactSavedKg] = useState(0);
+  const [currentMealMarked, setCurrentMealMarked] = useState(false);
+  const [currentMealStatus, setCurrentMealStatus] = useState("");
+  const [canMarkCurrentMeal, setCanMarkCurrentMeal] = useState(true);
   const [statusChoice, setStatusChoice] = useState("Will Eat");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [toast, setToast] = useState({ text: "", type: "success" });
@@ -137,6 +158,79 @@ export default function App() {
     setSelectedStudent(selected);
     setSearchQuery((prev) => (prev ? prev : selected));
     setHistory(Array.isArray(payload.selected_student_history) ? payload.selected_student_history : []);
+    setCurrentMealMarked(Boolean(payload.current_meal_marked));
+    setCurrentMealStatus(String(payload.current_meal_status || ""));
+    setCanMarkCurrentMeal(Boolean(payload.can_mark_current_meal));
+
+    if (payload.is_logged_in) {
+      const loggedStudent = String(payload.logged_student || selected || "").trim();
+      setStudentSession({ logged_in: true, student_name: loggedStudent });
+      setLoginName(loggedStudent);
+    }
+  }
+
+  async function loadSession() {
+    try {
+      const payload = await getJSON("/api/student/session");
+      const loggedIn = Boolean(payload.logged_in);
+      const studentName = String(payload.student_name || "").trim();
+      setStudentSession({ logged_in: loggedIn, student_name: studentName });
+      setLoginName(studentName);
+      if (!loggedIn) {
+        setSelectedStudent("");
+        setSearchQuery("");
+      }
+      return payload;
+    } catch {
+      setStudentSession({ logged_in: false, student_name: "" });
+      setLoginName("");
+      return { logged_in: false, student_name: "" };
+    }
+  }
+
+  async function loginStudent(event) {
+    event.preventDefault();
+
+    const trimmedName = loginName.trim();
+    if (!trimmedName) {
+      setToast({ text: "Please enter your student name.", type: "error" });
+      return;
+    }
+    const trimmedPin = loginPin.trim();
+    if (!trimmedPin) {
+      setToast({ text: "Please enter your PIN.", type: "error" });
+      return;
+    }
+
+    try {
+      const payload = await postJSON("/api/student/login", { student_name: trimmedName, pin: trimmedPin });
+      const loggedStudent = String(payload.student_name || trimmedName).trim();
+      setStudentSession({ logged_in: true, student_name: loggedStudent });
+      setSelectedStudent(loggedStudent);
+      setSearchQuery(loggedStudent);
+      setLoginPin("");
+      await loadBootstrap(loggedStudent);
+      setToast({ text: "Student login successful.", type: "success" });
+    } catch (error) {
+      setToast({ text: error.message || "Unable to login.", type: "error" });
+    }
+  }
+
+  async function logoutStudent() {
+    try {
+      await postJSON("/api/student/logout", {});
+    } finally {
+      setStudentSession({ logged_in: false, student_name: "" });
+      setLoginName("");
+      setLoginPin("");
+      setSelectedStudent("");
+      setSearchQuery("");
+      setHistory([]);
+      setCurrentMealMarked(false);
+      setCurrentMealStatus("");
+      setCanMarkCurrentMeal(true);
+      setToast({ text: "Logged out.", type: "success" });
+    }
   }
 
   async function loadHistory(studentName) {
@@ -154,46 +248,29 @@ export default function App() {
   }
 
   useEffect(() => {
+    loadSession().catch(() => {});
     loadBootstrap().catch(() => {
       setToast({ text: "Unable to load latest student dashboard data.", type: "error" });
     });
   }, []);
 
   useEffect(() => {
-    if (!selectedStudent) {
+    if (!studentSession.logged_in || !selectedStudent) {
       return;
     }
 
     loadHistory(selectedStudent);
-  }, [selectedStudent]);
+  }, [selectedStudent, studentSession.logged_in]);
 
   useEffect(() => {
     const interval = window.setInterval(() => {
-      loadBootstrap(selectedStudent).catch(() => {
+      loadBootstrap(studentSession.logged_in ? studentSession.student_name : selectedStudent).catch(() => {
         // Keep UI responsive even if refresh fails.
       });
     }, 30000);
 
     return () => window.clearInterval(interval);
-  }, [selectedStudent]);
-
-  const filteredNames = useMemo(() => {
-    const query = searchQuery.trim().toLowerCase();
-    if (!query) {
-      return students;
-    }
-
-    return students.filter((name) => name.toLowerCase().includes(query));
-  }, [searchQuery, students]);
-
-  function syncSelectedFromQuery(value) {
-    if (students.includes(value)) {
-      setSelectedStudent(value);
-      setSearchQuery(value);
-      return true;
-    }
-    return false;
-  }
+  }, [selectedStudent, studentSession]);
 
   async function onSubmitAttendance(event) {
     event.preventDefault();
@@ -203,10 +280,13 @@ export default function App() {
       return;
     }
 
-    const chosenName = searchQuery.trim();
-    const isValid = syncSelectedFromQuery(chosenName);
-    if (!isValid) {
-      setToast({ text: "Please select your name from the student list.", type: "error" });
+    if (!studentSession.logged_in) {
+      setToast({ text: "Please login first.", type: "error" });
+      return;
+    }
+
+    if (currentMealMarked || !canMarkCurrentMeal) {
+      setToast({ text: `You already marked ${runtime.activeMeal.meal} today.`, type: "error" });
       return;
     }
 
@@ -217,7 +297,6 @@ export default function App() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          student_name: chosenName,
           meal_slot: runtime.activeMeal.meal,
           status: statusChoice === "Will Eat" ? "Will Eat" : "Skip",
         }),
@@ -228,13 +307,78 @@ export default function App() {
         throw new Error(result.message || "Unable to submit attendance.");
       }
 
-      await loadBootstrap(chosenName);
+      await loadBootstrap(studentSession.student_name);
       setToast({ text: `Attendance marked for ${runtime.activeMeal.meal}.`, type: "success" });
     } catch (error) {
       setToast({ text: error.message || "Submission failed. Please try again.", type: "error" });
     } finally {
       setIsSubmitting(false);
     }
+  }
+
+  if (!studentSession.logged_in) {
+    return (
+      <div className="relative min-h-screen overflow-hidden bg-gradient-to-b from-emerald-50 via-white to-emerald-100 font-sora text-slate-900">
+        <div className="absolute inset-0 -z-10 bg-[radial-gradient(circle_at_15%_10%,rgba(39,167,117,0.20),transparent_38%),radial-gradient(circle_at_90%_20%,rgba(148,230,190,0.35),transparent_30%)]" />
+
+        <main className="mx-auto grid min-h-screen w-full max-w-4xl place-items-center px-4 py-8 sm:px-6 lg:px-8">
+          <section className="w-full max-w-xl rounded-3xl border border-emerald-200 bg-white p-6 shadow-card sm:p-8">
+            <div className="flex items-start gap-3">
+              <div className="grid h-12 w-12 place-items-center rounded-2xl bg-emerald-600 text-white shadow-lg shadow-emerald-200">
+                HM
+              </div>
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-emerald-700">Student Login</p>
+                <h1 className="text-2xl font-extrabold text-slate-900">Hostel Mess Attendance</h1>
+                <p className="mt-1 text-sm text-slate-600">Login once to mark your meal preference only one time per meal.</p>
+              </div>
+            </div>
+
+            <form onSubmit={loginStudent} className="mt-6 space-y-4">
+              <label className="block">
+                <span className="mb-1 block text-sm font-semibold text-slate-700">Student Name</span>
+                <input
+                  type="text"
+                  list="students-list"
+                  value={loginName}
+                  onChange={(event) => setLoginName(event.target.value)}
+                  placeholder="Start typing your name"
+                  className="w-full rounded-xl border border-emerald-200 bg-white px-4 py-3 text-sm outline-none focus:border-emerald-500 focus:ring-4 focus:ring-emerald-100"
+                  required
+                />
+                <datalist id="students-list">
+                  {students.map((name) => (
+                    <option key={name} value={name} />
+                  ))}
+                </datalist>
+              </label>
+
+              <label className="block">
+                <span className="mb-1 block text-sm font-semibold text-slate-700">PIN</span>
+                <input
+                  type="password"
+                  inputMode="numeric"
+                  value={loginPin}
+                  onChange={(event) => setLoginPin(event.target.value)}
+                  placeholder="Enter your PIN"
+                  className="w-full rounded-xl border border-emerald-200 bg-white px-4 py-3 text-sm outline-none focus:border-emerald-500 focus:ring-4 focus:ring-emerald-100"
+                  required
+                />
+              </label>
+
+              <button type="submit" className="w-full rounded-xl bg-[#16a34a] px-4 py-3 text-sm font-bold text-white hover:brightness-95">
+                Login to Continue
+              </button>
+            </form>
+
+            <div className="mt-4 rounded-2xl bg-slate-50 p-4 text-sm text-slate-600">
+              Once logged in, your attendance will be tied to your account and duplicate submissions for the same meal will be blocked.
+              <p className="mt-2 font-semibold text-slate-700">Default PIN: 1234</p>
+            </div>
+          </section>
+        </main>
+      </div>
+    );
   }
 
   return (
@@ -263,6 +407,18 @@ export default function App() {
             >
               Admin Login
             </a>
+            <div className="flex items-center gap-2">
+              <span className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-800">
+                {studentSession.student_name}
+              </span>
+              <button
+                type="button"
+                onClick={logoutStudent}
+                className="inline-flex items-center justify-center rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-bold text-slate-700 transition hover:-translate-y-0.5 hover:bg-slate-50"
+              >
+                Logout
+              </button>
+            </div>
           </div>
         </header>
 
@@ -333,26 +489,9 @@ export default function App() {
             )}
 
             <form onSubmit={onSubmitAttendance} className="space-y-4">
-              <div>
-                <label className="mb-1 block text-sm font-bold text-slate-800">Student Name</label>
-                <input
-                  type="text"
-                  value={searchQuery}
-                  onChange={(event) => setSearchQuery(event.target.value)}
-                  onBlur={(event) => {
-                    syncSelectedFromQuery(event.target.value.trim());
-                  }}
-                  list="students-list"
-                  placeholder="Search your name"
-                  className="w-full rounded-xl border border-emerald-200 bg-white px-4 py-3 text-sm outline-none transition focus:border-emerald-500 focus:ring-4 focus:ring-emerald-100"
-                  required
-                  disabled={isSubmitting}
-                />
-                <datalist id="students-list">
-                  {filteredNames.map((name) => (
-                    <option key={name} value={name} />
-                  ))}
-                </datalist>
+              <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-3">
+                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-emerald-700">Logged In As</p>
+                <p className="mt-1 text-base font-extrabold text-slate-900">{studentSession.student_name}</p>
               </div>
 
               <div>
@@ -385,12 +524,19 @@ export default function App() {
 
               <button
                 type="submit"
-                disabled={!runtime.activeMeal || isSubmitting}
+                disabled={!runtime.activeMeal || isSubmitting || !canMarkCurrentMeal || currentMealMarked}
                 className="w-full rounded-xl bg-gradient-to-r from-emerald-700 to-emerald-500 px-4 py-3 text-sm font-extrabold text-white shadow-lg shadow-emerald-200 transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-55"
               >
                 {isSubmitting ? "Submitting..." : "Submit Attendance"}
               </button>
             </form>
+
+            {currentMealMarked && (
+              <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-3">
+                <p className="text-sm font-bold text-amber-800">Already marked for this meal</p>
+                <p className="text-sm text-amber-700">Recorded preference: {currentMealStatus || "Submitted"}</p>
+              </div>
+            )}
 
             <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-3">
               <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-emerald-700">Today&apos;s Summary</p>

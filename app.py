@@ -19,7 +19,9 @@ load_dotenv(BASE_DIR / ".env")
 DATASET_PATH = BASE_DIR / "dataset.csv"
 ATTENDANCE_PATH = BASE_DIR / "attendance.csv"
 MENU_PATH = BASE_DIR / "menu.json"
+STUDENT_CREDENTIALS_PATH = BASE_DIR / "student_credentials.json"
 ATTENDANCE_COLUMNS = ["timestamp", "student_name", "meal_slot", "status", "finalized"]
+DEFAULT_STUDENT_PIN = "1234"
 
 EAT_STATUSES = {"eat", "will eat", "present", "yes", "y", "1"}
 
@@ -120,6 +122,68 @@ def load_menu() -> dict:
     }
 
 
+def normalize_name(value: str) -> str:
+    return str(value).strip().lower()
+
+
+def ensure_student_credentials_file() -> None:
+    if STUDENT_CREDENTIALS_PATH.exists():
+        return
+
+    records = [
+        {
+            "student_name": name,
+            "pin": DEFAULT_STUDENT_PIN,
+        }
+        for name in DEFAULT_STUDENT_NAMES
+    ]
+    STUDENT_CREDENTIALS_PATH.write_text(json.dumps(records, indent=2), encoding="utf-8")
+
+
+def load_student_credentials() -> dict[str, dict[str, str]]:
+    ensure_student_credentials_file()
+
+    try:
+        raw = json.loads(STUDENT_CREDENTIALS_PATH.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        raw = []
+
+    entries = raw if isinstance(raw, list) else []
+    merged: dict[str, dict[str, str]] = {}
+
+    for item in entries:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("student_name", "")).strip()
+        pin = str(item.get("pin", "")).strip() or DEFAULT_STUDENT_PIN
+        if not name:
+            continue
+        merged[normalize_name(name)] = {
+            "student_name": name,
+            "pin": pin,
+        }
+
+    attendance_names = get_student_names_from_attendance(load_attendance())
+    modified = False
+    for name in attendance_names:
+        norm = normalize_name(name)
+        if not norm:
+            continue
+        if norm not in merged:
+            merged[norm] = {
+                "student_name": name,
+                "pin": DEFAULT_STUDENT_PIN,
+            }
+            modified = True
+
+    if modified or len(entries) != len(merged):
+        serializable = list(merged.values())
+        serializable.sort(key=lambda row: normalize_name(row["student_name"]))
+        STUDENT_CREDENTIALS_PATH.write_text(json.dumps(serializable, indent=2), encoding="utf-8")
+
+    return merged
+
+
 def save_menu(menu_data: dict) -> None:
     MENU_PATH.write_text(json.dumps(menu_data, indent=2), encoding="utf-8")
 
@@ -205,7 +269,7 @@ def get_day_meal_counts(attendance: pd.DataFrame, date_key: str) -> dict[str, di
 
 
 def get_student_week_history(attendance: pd.DataFrame, student_name: str, days: int = 7) -> list[dict]:
-    target = student_name.strip().lower()
+    target = normalize_name(student_name)
     now = datetime.now()
 
     date_keys: list[str] = []
@@ -523,6 +587,14 @@ def admin_required() -> bool:
     return bool(session.get("is_admin"))
 
 
+def student_session_name() -> str:
+    return str(session.get("student_name", "")).strip()
+
+
+def student_required() -> bool:
+    return bool(student_session_name())
+
+
 @app.route("/")
 def index() -> str:
     return redirect(url_for("student_dashboard"))
@@ -531,6 +603,57 @@ def index() -> str:
 @app.route("/student")
 def student_dashboard() -> str:
     return render_template("index.html")
+
+
+@app.route("/student/login")
+def student_login_page() -> str:
+    return render_template("index.html")
+
+
+@app.route("/student/logout")
+def student_logout() -> str:
+    session.pop("student_name", None)
+    return redirect(url_for("student_dashboard"))
+
+
+@app.route("/api/student/session", methods=["GET"])
+def api_student_session():
+    student_name = student_session_name()
+    return jsonify(
+        {
+            "logged_in": bool(student_name),
+            "student_name": student_name,
+        }
+    )
+
+
+@app.route("/api/student/login", methods=["POST"])
+def api_student_login():
+    data = request.get_json(silent=True) or request.form
+    student_name = str(data.get("student_name", "")).strip()
+    pin = str(data.get("pin", "")).strip()
+
+    if not student_name:
+        return jsonify({"success": False, "message": "Student name is required."}), 400
+    if not pin:
+        return jsonify({"success": False, "message": "PIN is required."}), 400
+
+    credentials = load_student_credentials()
+    user = credentials.get(normalize_name(student_name))
+    if not user:
+        return jsonify({"success": False, "message": "Student not found in records."}), 400
+    if str(user.get("pin", "")).strip() != pin:
+        return jsonify({"success": False, "message": "Invalid PIN."}), 401
+
+    canonical_name = str(user.get("student_name", student_name)).strip() or student_name
+    session["student_name"] = canonical_name
+    return jsonify({"success": True, "student_name": canonical_name})
+
+
+@app.route("/api/student/logout", methods=["POST"])
+def api_student_logout():
+    session.pop("student_name", None)
+    return jsonify({"success": True})
 
 
 @app.route("/api/student/bootstrap", methods=["GET"])
@@ -547,10 +670,14 @@ def api_student_bootstrap():
     menu_meal = active_meal if active_meal else next_meal
     menu_items = str(menu_data["menus"].get(str(menu_meal["meal"]), "Menu not available yet."))
 
-    selected_student = request.args.get("student_name", "").strip()
+    logged_student = student_session_name()
+    requested_student = request.args.get("student_name", "").strip()
+    selected_student = logged_student or requested_student
     if not selected_student:
         all_students = get_student_names_from_attendance(attendance)
         selected_student = all_students[0] if all_students else ""
+
+    selected_student = selected_student.strip()
 
     selected_history = get_student_week_history(attendance, selected_student, days=7)
     monthly_rows = attendance.copy()
@@ -567,6 +694,22 @@ def api_student_bootstrap():
     )
     impact_saved_kg = round(1.2 + student_monthly_count * 0.12, 1)
 
+    current_meal_marked = False
+    current_meal_status = None
+    can_mark_current_meal = bool(logged_student and active_meal)
+    if logged_student and active_meal:
+        today_mask = (
+            pd.to_datetime(attendance["timestamp"], errors="coerce").dt.strftime("%Y-%m-%d")
+            == date_key
+        )
+        student_mask = attendance["student_name"].astype(str).str.strip().str.lower() == logged_student.lower()
+        meal_mask = attendance["meal_slot"].astype(str).str.strip().str.lower() == str(active_meal["meal"]).lower()
+        current_rows = attendance[today_mask & student_mask & meal_mask].copy()
+        if not current_rows.empty:
+            current_meal_marked = True
+            current_meal_status = str(current_rows.iloc[-1]["status"])
+            can_mark_current_meal = False
+
     return jsonify(
         {
             "server_time": now.isoformat(),
@@ -579,6 +722,8 @@ def api_student_bootstrap():
             "meal_counts": meal_counts,
             "students": get_student_names_from_attendance(attendance),
             "selected_student": selected_student,
+            "logged_student": logged_student,
+            "is_logged_in": bool(logged_student),
             "selected_student_history": selected_history,
             "menu_banner": {
                 "meal": menu_meal["meal"],
@@ -586,6 +731,9 @@ def api_student_bootstrap():
                 "updated_at": menu_data["updated_at"],
             },
             "impact_saved_kg": impact_saved_kg,
+            "current_meal_marked": current_meal_marked,
+            "current_meal_status": current_meal_status,
+            "can_mark_current_meal": can_mark_current_meal,
         }
     )
 
@@ -605,13 +753,35 @@ def api_student_history():
 @app.route("/mark_attendance", methods=["POST"])
 def mark_attendance():
     data = request.get_json(silent=True) or request.form
-    student_name = str(data.get("student_name", "Anonymous")).strip() or "Anonymous"
-    meal_slot = str(data.get("meal_slot", "General")).strip() or "General"
+    student_name = student_session_name() or str(data.get("student_name", "")).strip()
+    if not student_name:
+        return jsonify({"success": False, "message": "Please login as a student first."}), 401
+
+    current_meal, next_meal = current_and_next_meal(datetime.now())
+    meal_slot = str(data.get("meal_slot", current_meal["meal"] if current_meal else next_meal["meal"])).strip() or "General"
     status = str(data.get("status", "Eat")).strip()
 
+    now = datetime.now()
+    today_key = now.strftime("%Y-%m-%d")
+
     attendance_df = load_attendance()
+    attendance_df["date_key"] = pd.to_datetime(attendance_df["timestamp"], errors="coerce").dt.strftime("%Y-%m-%d")
+    duplicate_mask = (
+        (attendance_df["date_key"] == today_key)
+        & (attendance_df["student_name"].astype(str).str.strip().str.lower() == student_name.lower())
+        & (attendance_df["meal_slot"].astype(str).str.strip().str.lower() == meal_slot.lower())
+    )
+
+    if bool(duplicate_mask.any()):
+        return jsonify(
+            {
+                "success": False,
+                "message": f"You have already marked your preference for {meal_slot} today.",
+            }
+        ), 409
+
     attendance_df.loc[len(attendance_df)] = {
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
         "student_name": student_name,
         "meal_slot": meal_slot,
         "status": status,
@@ -726,6 +896,55 @@ def api_attendance_live():
             "date": date_key,
             "summary": summary,
             "records": records,
+            "student_names": get_student_names_from_attendance(attendance),
+        }
+    )
+
+
+@app.route("/api/admin/attendance/reset", methods=["POST"])
+def api_admin_attendance_reset():
+    if not admin_required():
+        return jsonify({"error": "Unauthorized"}), 401
+
+    data = request.get_json(silent=True) or request.form
+    date_key = str(data.get("date", "")).strip() or datetime.now().strftime("%Y-%m-%d")
+    student_name = str(data.get("student_name", "")).strip()
+    meal_slot = str(data.get("meal_slot", "")).strip() or "All"
+
+    if not student_name:
+        return jsonify({"success": False, "message": "student_name is required."}), 400
+
+    valid_meals = {meal["meal"] for meal in MEAL_WINDOWS}
+    if meal_slot != "All" and meal_slot not in valid_meals:
+        return jsonify({"success": False, "message": "Invalid meal slot."}), 400
+
+    attendance = load_attendance()
+    if attendance.empty:
+        return jsonify({"success": False, "message": "No attendance data available."}), 400
+
+    attendance["date_key"] = pd.to_datetime(attendance["timestamp"], errors="coerce").dt.strftime("%Y-%m-%d")
+    student_mask = attendance["student_name"].astype(str).map(normalize_name) == normalize_name(student_name)
+    date_mask = attendance["date_key"] == date_key
+    base_mask = student_mask & date_mask
+
+    if meal_slot == "All":
+        target_mask = base_mask
+    else:
+        meal_mask = attendance["meal_slot"].astype(str).str.strip().str.lower() == meal_slot.lower()
+        target_mask = base_mask & meal_mask
+
+    removed_count = int(target_mask.sum())
+    if removed_count == 0:
+        return jsonify({"success": False, "message": "No matching attendance records found."}), 404
+
+    updated = attendance.loc[~target_mask, ATTENDANCE_COLUMNS].copy()
+    updated.to_csv(ATTENDANCE_PATH, index=False)
+
+    return jsonify(
+        {
+            "success": True,
+            "message": f"Removed {removed_count} attendance record(s).",
+            "removed_count": removed_count,
         }
     )
 
