@@ -667,12 +667,6 @@ export default function App() {
               </div>
             </div>
 
-            <a
-              href="/admin/login"
-              className="inline-flex items-center justify-center rounded-xl border border-emerald-300 bg-white px-4 py-2 text-sm font-bold text-emerald-800 transition hover:-translate-y-0.5 hover:bg-emerald-50"
-            >
-              Admin Login
-            </a>
             <div className="flex items-center gap-2">
               <span className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-800">
                 {studentSession.student_name}
