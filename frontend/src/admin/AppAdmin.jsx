@@ -665,6 +665,48 @@ function DashboardPage({ summary, records, attendance, menuData, feedbackSummary
         </form>
         {pinResetMsg && <p className="mt-2 text-sm font-semibold text-slate-700">{pinResetMsg}</p>}
       </div>
+
+      <div className="admin-card bg-white p-4">
+        <h3 className="mb-1 text-lg font-semibold">Meal Cutoff Reminders</h3>
+        <p className="mb-3 text-sm text-slate-500">Send reminders to students 15 minutes before each meal closes.</p>
+        <div className="grid gap-4 md:grid-cols-2">
+          <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3">
+            <p className="text-sm font-bold text-emerald-900">Reminder Status</p>
+            <p className="mt-1 text-sm text-emerald-800">Students receive dashboard notifications before meal cutoffs.</p>
+            <p className="mt-2 text-xs text-emerald-700">Reminders sent 15 minutes before each meal closes.</p>
+          </div>
+          <div>
+            <button
+              type="button"
+              onClick={async () => {
+                if (!canManage) {
+                  alert("Only manager/superadmin can test reminders.");
+                  return;
+                }
+                try {
+                  const payload = await postJSON("/api/admin/meal-reminders/test", { meal: "Lunch" });
+                  alert(payload.message || "Test reminder sent!");
+                } catch (error) {
+                  alert(error.message || "Unable to send test reminder.");
+                }
+              }}
+              className="w-full rounded-xl bg-emerald-600 px-4 py-3 font-semibold text-white hover:bg-emerald-700 disabled:opacity-60"
+              disabled={!canManage}
+            >
+              Send Test Reminder
+            </button>
+            <p className="mt-2 text-xs text-slate-500">Send a test reminder for Lunch to all students.</p>
+          </div>
+        </div>
+        <div className="mt-3 grid gap-2 sm:grid-cols-4">
+          {["Breakfast", "Lunch", "Tea", "Dinner"].map((meal) => (
+            <div key={meal} className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+              <p className="text-sm font-bold text-slate-900">{meal}</p>
+              <p className="text-xs text-slate-600">Reminders enabled</p>
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }

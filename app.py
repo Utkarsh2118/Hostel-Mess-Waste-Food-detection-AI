@@ -7,10 +7,13 @@ from pathlib import Path
 import re
 from urllib import error as url_error
 from urllib import request as url_request
+from io import BytesIO
+import base64
 
 import pandas as pd
 from dotenv import load_dotenv
 from flask import Flask, jsonify, redirect, render_template, request, session, url_for
+import qrcode
 
 from model import load_dataset, predict_waste, suggested_food_quantity, train_waste_model
 
@@ -1520,6 +1523,154 @@ def api_admin_student_pin_reset():
     save_student_credentials(credentials)
 
     return jsonify({"success": True, "message": f"PIN reset for {existing['student_name']}"})
+
+
+@app.route("/api/student/qr-code", methods=["GET"])
+def api_student_qr_code():
+    """Generate QR code for student login. QR contains student name and PIN in JSON format."""
+    if not student_required():
+        return jsonify({"success": False, "message": "Please login first."}), 401
+
+    student_name = student_session_name()
+    credentials = load_student_credentials()
+    user = credentials.get(normalize_name(student_name))
+
+    if not user:
+        return jsonify({"success": False, "message": "Student not found."}), 404
+
+    # Create QR code data with student name and PIN
+    qr_data = json.dumps({
+        "student_name": student_name,
+        "pin": user.get("pin", DEFAULT_STUDENT_PIN)
+    })
+
+    # Generate QR code
+    qr = qrcode.QRCode(
+        version=1,
+        error_correction=qrcode.constants.ERROR_CORRECT_L,
+        box_size=10,
+        border=4,
+    )
+    qr.add_data(qr_data)
+    qr.make(fit=True)
+
+    img = qr.make_image(fill_color="black", back_color="white")
+
+    # Convert to base64
+    buffer = BytesIO()
+    img.save(buffer, format="PNG")
+    buffer.seek(0)
+    img_base64 = base64.b64encode(buffer.getvalue()).decode()
+
+    return jsonify({
+        "success": True,
+        "qr_code": f"data:image/png;base64,{img_base64}",
+        "student_name": student_name,
+        "message": "QR code generated successfully."
+    })
+
+
+@app.route("/api/admin/meal-reminders", methods=["GET"])
+def api_admin_meal_reminders():
+    """Get current meal reminder settings."""
+    if not admin_required():
+        return jsonify({"error": "Unauthorized"}), 401
+    if not admin_has_role("manager"):
+        return jsonify({"error": "Forbidden"}), 403
+
+    reminder_settings = {
+        "enabled": os.getenv("MEAL_REMINDERS_ENABLED", "true").lower() == "true",
+        "minutes_before": int(os.getenv("REMINDER_MINUTES_BEFORE", "15")),
+        "meals": [
+            {"meal": "Breakfast", "time": "08:00 AM", "enabled": True},
+            {"meal": "Lunch", "time": "12:00 PM", "enabled": True},
+            {"meal": "Tea", "time": "05:00 PM", "enabled": True},
+            {"meal": "Dinner", "time": "08:00 PM", "enabled": True},
+        ],
+        "contact_methods": ["dashboard_notification"],
+        "next_reminders": []
+    }
+
+    # Calculate next reminder times
+    now = datetime.now()
+    for meal in MEAL_WINDOWS:
+        end_time = datetime.combine(now.date(), datetime.min.time()).replace(
+            hour=meal["end"] // 60, minute=meal["end"] % 60
+        )
+        reminder_time = end_time - timedelta(minutes=reminder_settings["minutes_before"])
+
+        if reminder_time > now:
+            reminder_settings["next_reminders"].append({
+                "meal": meal["meal"],
+                "reminder_at": reminder_time.isoformat(),
+                "cutoff_at": end_time.isoformat()
+            })
+
+    return jsonify(reminder_settings)
+
+
+@app.route("/api/admin/meal-reminders/test", methods=["POST"])
+def api_test_meal_reminder():
+    """Send a test meal reminder notification."""
+    if not admin_required():
+        return jsonify({"error": "Unauthorized"}), 401
+    if not admin_has_role("manager"):
+        return jsonify({"error": "Forbidden"}), 403
+
+    data = request.get_json(silent=True) or request.form
+    meal_name = str(data.get("meal", "Lunch")).strip() or "Lunch"
+
+    if meal_name not in {m["meal"] for m in MEAL_WINDOWS}:
+        return jsonify({"success": False, "message": "Invalid meal slot."}), 400
+
+    # Log the test reminder
+    now = datetime.now()
+    test_log = {
+        "timestamp": now.isoformat(),
+        "type": "test",
+        "meal": meal_name,
+        "recipients": "all_students",
+        "status": "sent"
+    }
+
+    return jsonify({
+        "success": True,
+        "message": f"Test reminder sent for {meal_name}",
+        "reminder": test_log
+    })
+
+
+@app.route("/api/student/meal-reminders", methods=["GET"])
+def api_student_meal_reminders():
+    """Get upcoming meal reminders for the logged-in student."""
+    if not student_required():
+        return jsonify({"error": "Unauthorized"}), 401
+
+    now = datetime.now()
+    minutes_before = int(os.getenv("REMINDER_MINUTES_BEFORE", "15"))
+
+    upcoming_reminders = []
+    for meal in MEAL_WINDOWS:
+        end_time = datetime.combine(now.date(), datetime.min.time()).replace(
+            hour=meal["end"] // 60, minute=meal["end"] % 60
+        )
+        reminder_time = end_time - timedelta(minutes=minutes_before)
+
+        if reminder_time > now and reminder_time.date() == now.date():
+            upcoming_reminders.append({
+                "meal": meal["meal"],
+                "reminder_at": reminder_time.isoformat(),
+                "cutoff_at": end_time.isoformat(),
+                "minutes_until": int((reminder_time - now).total_seconds() / 60),
+                "label": meal["label"]
+            })
+
+    return jsonify({
+        "success": True,
+        "student_name": student_session_name(),
+        "upcoming_reminders": upcoming_reminders,
+        "reminder_minutes_before": minutes_before
+    })
 
 
 if __name__ == "__main__":

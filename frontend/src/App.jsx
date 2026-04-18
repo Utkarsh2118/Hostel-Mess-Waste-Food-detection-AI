@@ -127,6 +127,9 @@ export default function App() {
   const [feedbackRating, setFeedbackRating] = useState(5);
   const [feedbackComment, setFeedbackComment] = useState("");
   const [isSubmittingFeedback, setIsSubmittingFeedback] = useState(false);
+  const [qrCodeImage, setQrCodeImage] = useState("");
+  const [mealReminders, setMealReminders] = useState([]);
+  const [isLoadingQr, setIsLoadingQr] = useState(false);
   const [toast, setToast] = useState({ text: "", type: "success" });
   const videoRef = useRef(null);
   const scanTimerRef = useRef(null);
@@ -398,6 +401,35 @@ export default function App() {
     }
   }
 
+  async function loadQrCode() {
+    if (!studentSession.logged_in) {
+      return;
+    }
+
+    setIsLoadingQr(true);
+    try {
+      const payload = await getJSON("/api/student/qr-code");
+      setQrCodeImage(payload.qr_code);
+    } catch {
+      // QR code is optional, don't show error
+    } finally {
+      setIsLoadingQr(false);
+    }
+  }
+
+  async function loadMealReminders() {
+    if (!studentSession.logged_in) {
+      return;
+    }
+
+    try {
+      const payload = await getJSON("/api/student/meal-reminders");
+      setMealReminders(payload.upcoming_reminders || []);
+    } catch {
+      // Reminders are optional
+    }
+  }
+
   async function loadHistory(studentName) {
     if (!studentName) {
       setHistory([]);
@@ -436,6 +468,15 @@ export default function App() {
 
     return () => window.clearInterval(interval);
   }, [selectedStudent, studentSession]);
+
+  useEffect(() => {
+    if (!studentSession.logged_in) {
+      return;
+    }
+
+    loadQrCode();
+    loadMealReminders();
+  }, [studentSession.logged_in]);
 
   async function onSubmitAttendance(event) {
     event.preventDefault();
@@ -856,7 +897,23 @@ export default function App() {
           </div>
         </section>
 
-        <section className="mt-4 grid gap-4 lg:grid-cols-2">
+        <section className="mt-4 grid gap-4 lg:grid-cols-3">
+          <article className="rounded-3xl border border-emerald-200 bg-white p-4 shadow-card sm:p-5">
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-700">Quick Login</p>
+            <h3 className="mt-1 text-lg font-extrabold text-slate-900">My QR Code</h3>
+            <p className="mt-2 text-sm text-slate-600">Scan this QR with another device to quickly login.</p>
+            <div className="mt-4 flex items-center justify-center rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+              {qrCodeImage ? (
+                <img src={qrCodeImage} alt="Student QR Code" className="h-48 w-48 object-contain" />
+              ) : isLoadingQr ? (
+                <p className="text-sm text-slate-500">Loading QR code...</p>
+              ) : (
+                <p className="text-sm text-slate-500">QR code unavailable</p>
+              )}
+            </div>
+            <p className="mt-3 text-xs text-slate-500 text-center">Contains your name and PIN</p>
+          </article>
+
           <article className="rounded-3xl border border-emerald-200 bg-white p-4 shadow-card sm:p-5">
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-700">Security</p>
             <h3 className="mt-1 text-lg font-extrabold text-slate-900">Change PIN</h3>
@@ -929,6 +986,26 @@ export default function App() {
             </form>
           </article>
         </section>
+
+        {mealReminders.length > 0 && (
+          <section className="mt-4 rounded-3xl border border-amber-300 bg-gradient-to-r from-amber-50 to-orange-50 p-4 shadow-card sm:p-5">
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-amber-800">Meal Reminders</p>
+            <h3 className="mt-1 text-lg font-extrabold text-slate-900">Upcoming Meal Cutoffs</h3>
+            <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+              {mealReminders.map((reminder) => {
+                const reminderDate = new Date(reminder.reminder_at);
+                const minutesUntil = Math.max(0, reminder.minutes_until);
+                return (
+                  <div key={reminder.meal} className="rounded-2xl border border-amber-200 bg-white p-3">
+                    <p className="text-sm font-bold text-amber-900">{reminder.meal}</p>
+                    <p className="text-xs text-amber-700">{reminderDate.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</p>
+                    <p className="mt-1 text-xs font-semibold text-amber-800">{minutesUntil} min remaining</p>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        )}
 
         <section className="mt-4 rounded-3xl border border-emerald-300 bg-gradient-to-r from-emerald-700 to-emerald-500 p-4 text-white shadow-card sm:p-5">
           <p className="text-xs font-semibold uppercase tracking-[0.2em] text-emerald-100">Food Waste Impact</p>
