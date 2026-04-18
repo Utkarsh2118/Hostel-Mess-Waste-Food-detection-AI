@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 import os
 from pathlib import Path
@@ -18,9 +18,42 @@ BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env")
 DATASET_PATH = BASE_DIR / "dataset.csv"
 ATTENDANCE_PATH = BASE_DIR / "attendance.csv"
+MENU_PATH = BASE_DIR / "menu.json"
 ATTENDANCE_COLUMNS = ["timestamp", "student_name", "meal_slot", "status", "finalized"]
 
 EAT_STATUSES = {"eat", "will eat", "present", "yes", "y", "1"}
+
+MEAL_WINDOWS = [
+    {"meal": "Breakfast", "start": 8 * 60, "end": 10 * 60, "label": "08:00 AM - 10:00 AM"},
+    {"meal": "Lunch", "start": 12 * 60, "end": 15 * 60, "label": "12:00 PM - 03:00 PM"},
+    {"meal": "Tea", "start": 17 * 60, "end": 18 * 60, "label": "05:00 PM - 06:00 PM"},
+    {"meal": "Dinner", "start": 20 * 60, "end": 22 * 60, "label": "08:00 PM - 10:00 PM"},
+]
+
+DEFAULT_STUDENT_NAMES = [
+    "Aarav Sharma",
+    "Ishita Verma",
+    "Rohan Das",
+    "Sana Khan",
+    "Yash Patel",
+    "Priya Iyer",
+    "Kunal Singh",
+    "Meera Nair",
+    "Dev Malhotra",
+    "Tanvi Joshi",
+    "Arjun Roy",
+    "Neha Kulkarni",
+]
+
+DEFAULT_MENU = {
+    "updated_at": "11:30 AM",
+    "menus": {
+        "Breakfast": "Poha, Boiled Eggs, Banana, Milk",
+        "Lunch": "Dal, Rice, Sabzi, Salad",
+        "Tea": "Masala Tea, Veg Sandwich, Biscuits",
+        "Dinner": "Roti, Paneer Curry, Jeera Rice, Kheer",
+    },
+}
 
 ADMIN_USERNAME = "admin"
 ADMIN_PASSWORD = "admin123"
@@ -57,6 +90,174 @@ def load_attendance() -> pd.DataFrame:
     attendance["finalized"] = attendance["finalized"].astype(int)
 
     return attendance[ATTENDANCE_COLUMNS]
+
+
+def ensure_menu_file() -> None:
+    if MENU_PATH.exists():
+        return
+
+    MENU_PATH.write_text(json.dumps(DEFAULT_MENU, indent=2), encoding="utf-8")
+
+
+def load_menu() -> dict:
+    ensure_menu_file()
+
+    try:
+        parsed = json.loads(MENU_PATH.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        parsed = DEFAULT_MENU.copy()
+
+    menus = parsed.get("menus") if isinstance(parsed, dict) else {}
+    if not isinstance(menus, dict):
+        menus = {}
+
+    merged_menus = {**DEFAULT_MENU["menus"], **menus}
+    updated_at = str(parsed.get("updated_at", DEFAULT_MENU["updated_at"]))
+
+    return {
+        "updated_at": updated_at,
+        "menus": merged_menus,
+    }
+
+
+def save_menu(menu_data: dict) -> None:
+    MENU_PATH.write_text(json.dumps(menu_data, indent=2), encoding="utf-8")
+
+
+def current_and_next_meal(now: datetime) -> tuple[dict | None, dict]:
+    now_minutes = now.hour * 60 + now.minute
+    active = None
+
+    for meal in MEAL_WINDOWS:
+        if now_minutes >= int(meal["start"]) and now_minutes < int(meal["end"]):
+            active = meal
+            break
+
+    next_meal = next((meal for meal in MEAL_WINDOWS if now_minutes < int(meal["start"])), None)
+    if not next_meal:
+        next_meal = MEAL_WINDOWS[0]
+
+    return active, next_meal
+
+
+def seconds_until_meal_event(now: datetime, active_meal: dict | None, next_meal: dict) -> int:
+    target = now.replace(second=0, microsecond=0)
+
+    if active_meal:
+        end_minutes = int(active_meal["end"])
+        target = target.replace(hour=end_minutes // 60, minute=end_minutes % 60)
+    else:
+        start_minutes = int(next_meal["start"])
+        target = target.replace(hour=start_minutes // 60, minute=start_minutes % 60)
+        now_minutes = now.hour * 60 + now.minute
+        if now_minutes >= int(next_meal["start"]):
+            target += timedelta(days=1)
+
+    return max(int((target - now).total_seconds()), 0)
+
+
+def get_student_names_from_attendance(attendance: pd.DataFrame) -> list[str]:
+    if attendance.empty:
+        return DEFAULT_STUDENT_NAMES.copy()
+
+    names = (
+        attendance["student_name"]
+        .astype(str)
+        .str.strip()
+        .replace("", pd.NA)
+        .dropna()
+        .drop_duplicates()
+        .tolist()
+    )
+
+    merged = list(dict.fromkeys(DEFAULT_STUDENT_NAMES + names))
+    return merged
+
+
+def get_day_meal_counts(attendance: pd.DataFrame, date_key: str) -> dict[str, dict[str, int]]:
+    counts = {
+        meal["meal"]: {"marked": 0, "attending": 0}
+        for meal in MEAL_WINDOWS
+    }
+
+    if attendance.empty:
+        return counts
+
+    df = attendance.copy()
+    df["date_key"] = pd.to_datetime(df["timestamp"], errors="coerce").dt.strftime("%Y-%m-%d")
+    day_df = df[df["date_key"] == date_key].copy()
+
+    if day_df.empty:
+        return counts
+
+    day_df["meal_slot_norm"] = day_df["meal_slot"].astype(str).str.strip().str.lower()
+    eat_mask = day_df["status"].astype(str).str.strip().str.lower().isin(EAT_STATUSES)
+
+    for meal in MEAL_WINDOWS:
+        meal_key = str(meal["meal"])
+        slot_mask = day_df["meal_slot_norm"] == meal_key.lower()
+        counts[meal_key] = {
+            "marked": int(slot_mask.sum()),
+            "attending": int((slot_mask & eat_mask).sum()),
+        }
+
+    return counts
+
+
+def get_student_week_history(attendance: pd.DataFrame, student_name: str, days: int = 7) -> list[dict]:
+    target = student_name.strip().lower()
+    now = datetime.now()
+
+    date_keys: list[str] = []
+    for idx in range(days - 1, -1, -1):
+        date_keys.append((now - timedelta(days=idx)).strftime("%Y-%m-%d"))
+
+    empty_template = {"B": 0, "L": 0, "T": 0, "D": 0}
+    label_map = {
+        "Breakfast": "B",
+        "Lunch": "L",
+        "Tea": "T",
+        "Dinner": "D",
+    }
+
+    if attendance.empty or not target:
+        return [
+            {
+                "day": datetime.strptime(key, "%Y-%m-%d").strftime("%a"),
+                "date": key,
+                "slots": empty_template.copy(),
+            }
+            for key in date_keys
+        ]
+
+    df = attendance.copy()
+    df["name_norm"] = df["student_name"].astype(str).str.strip().str.lower()
+    df["date_key"] = pd.to_datetime(df["timestamp"], errors="coerce").dt.strftime("%Y-%m-%d")
+    df["status_eat"] = df["status"].astype(str).str.strip().str.lower().isin(EAT_STATUSES)
+
+    student_df = df[df["name_norm"] == target].copy()
+    student_df["meal_slot"] = student_df["meal_slot"].astype(str).str.strip()
+
+    history: list[dict] = []
+    for key in date_keys:
+        slots = empty_template.copy()
+        day_df = student_df[student_df["date_key"] == key]
+        for meal_name, short_code in label_map.items():
+            meal_df = day_df[day_df["meal_slot"].str.lower() == meal_name.lower()]
+            if meal_df.empty:
+                slots[short_code] = 0
+            else:
+                slots[short_code] = 1 if bool(meal_df.iloc[-1]["status_eat"]) else 0
+
+        history.append(
+            {
+                "day": datetime.strptime(key, "%Y-%m-%d").strftime("%a"),
+                "date": key,
+                "slots": slots,
+            }
+        )
+
+    return history
 
 
 def status_means_eat(status: str) -> bool:
@@ -330,6 +531,75 @@ def index() -> str:
 @app.route("/student")
 def student_dashboard() -> str:
     return render_template("index.html")
+
+
+@app.route("/api/student/bootstrap", methods=["GET"])
+def api_student_bootstrap():
+    now = datetime.now()
+    date_key = now.strftime("%Y-%m-%d")
+    attendance = load_attendance()
+    menu_data = load_menu()
+
+    active_meal, next_meal = current_and_next_meal(now)
+    seconds_remaining = seconds_until_meal_event(now, active_meal, next_meal)
+    meal_counts = get_day_meal_counts(attendance, date_key)
+
+    menu_meal = active_meal if active_meal else next_meal
+    menu_items = str(menu_data["menus"].get(str(menu_meal["meal"]), "Menu not available yet."))
+
+    selected_student = request.args.get("student_name", "").strip()
+    if not selected_student:
+        all_students = get_student_names_from_attendance(attendance)
+        selected_student = all_students[0] if all_students else ""
+
+    selected_history = get_student_week_history(attendance, selected_student, days=7)
+    monthly_rows = attendance.copy()
+    monthly_rows["dt"] = pd.to_datetime(monthly_rows["timestamp"], errors="coerce")
+    monthly_rows = monthly_rows[
+        (monthly_rows["dt"].dt.month == now.month) & (monthly_rows["dt"].dt.year == now.year)
+    ]
+    monthly_rows["name_norm"] = monthly_rows["student_name"].astype(str).str.strip().str.lower()
+
+    student_monthly_count = int(
+        (
+            monthly_rows["name_norm"] == selected_student.strip().lower()
+        ).sum()
+    )
+    impact_saved_kg = round(1.2 + student_monthly_count * 0.12, 1)
+
+    return jsonify(
+        {
+            "server_time": now.isoformat(),
+            "today_label": now.strftime("%A, %d %B %Y"),
+            "meal_slots": MEAL_WINDOWS,
+            "active_meal": active_meal["meal"] if active_meal else None,
+            "next_meal": next_meal["meal"],
+            "seconds_remaining": seconds_remaining,
+            "is_open": bool(active_meal),
+            "meal_counts": meal_counts,
+            "students": get_student_names_from_attendance(attendance),
+            "selected_student": selected_student,
+            "selected_student_history": selected_history,
+            "menu_banner": {
+                "meal": menu_meal["meal"],
+                "items": menu_items,
+                "updated_at": menu_data["updated_at"],
+            },
+            "impact_saved_kg": impact_saved_kg,
+        }
+    )
+
+
+@app.route("/api/student/history", methods=["GET"])
+def api_student_history():
+    student_name = request.args.get("student_name", "").strip()
+    if not student_name:
+        return jsonify({"success": False, "message": "student_name is required."}), 400
+
+    attendance = load_attendance()
+    history = get_student_week_history(attendance, student_name, days=7)
+
+    return jsonify({"success": True, "student_name": student_name, "history": history})
 
 
 @app.route("/mark_attendance", methods=["POST"])
@@ -682,6 +952,37 @@ def api_chatbot():
             else None,
         }
     )
+
+@app.route("/api/admin/menu", methods=["GET", "POST"])
+def api_admin_menu():
+    if not admin_required():
+        return jsonify({"error": "Unauthorized"}), 401
+
+    if request.method == "GET":
+        return jsonify(load_menu())
+
+    data = request.get_json(silent=True) or request.form
+    meal = str(data.get("meal", "")).strip()
+    items = str(data.get("items", "")).strip()
+
+    if meal not in {m["meal"] for m in MEAL_WINDOWS}:
+        return jsonify({"success": False, "message": "Invalid meal slot."}), 400
+    if not items:
+        return jsonify({"success": False, "message": "Menu items cannot be empty."}), 400
+
+    menu_data = load_menu()
+    menu_data["menus"][meal] = items
+    menu_data["updated_at"] = datetime.now().strftime("%I:%M %p")
+    save_menu(menu_data)
+
+    return jsonify(
+        {
+            "success": True,
+            "message": f"{meal} menu updated.",
+            "menu": menu_data,
+        }
+    )
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))

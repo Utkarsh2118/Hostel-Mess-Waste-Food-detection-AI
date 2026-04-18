@@ -3,129 +3,14 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Hostel Mess AI | Student Dashboard</title>
+  <title>Hostel Mess Attendance | Student</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" />
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+  <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='student-dist/student-app.css') }}" />
 </head>
-<body class="student-page">
-  <div class="bg-orb orb-1"></div>
-  <div class="bg-orb orb-2"></div>
-
-  <main class="student-shell fade-up">
-    <header class="student-hero">
-      <div class="hero-content">
-        <p class="kicker"><i class="fa-solid fa-seedling"></i> Smart Mess Assistant</p>
-        <h1>Hostel Mess Attendance</h1>
-        <p class="hero-subtext">
-          Mark your meal plan in seconds and get a quick AI-based estimate to help reduce food waste.
-        </p>
-        <div class="hero-tags">
-          <span><i class="fa-solid fa-bolt"></i> Fast Check-in</span>
-          <span><i class="fa-solid fa-leaf"></i> Lower Waste</span>
-          <span><i class="fa-solid fa-chart-line"></i> Better Forecast</span>
-        </div>
-      </div>
-
-      <a class="admin-link" href="{{ url_for('admin_login') }}">
-        <i class="fa-solid fa-lock"></i> Admin Login
-      </a>
-    </header>
-
-    <section class="student-insights">
-      <article class="insight-pill">
-        <i class="fa-solid fa-user-check"></i>
-        <div>
-          <h3>Attendance First</h3>
-          <p>Daily responses improve food planning accuracy.</p>
-        </div>
-      </article>
-
-      <article class="insight-pill">
-        <i class="fa-solid fa-clock"></i>
-        <div>
-          <h3>Time-Based Meals</h3>
-          <p>Attendance is taken only for the active meal slot.</p>
-        </div>
-      </article>
-
-      <article class="insight-pill">
-        <i class="fa-solid fa-scale-balanced"></i>
-        <div>
-          <h3>Balanced Preparation</h3>
-          <p>Supports serving enough while avoiding over-cooking.</p>
-        </div>
-      </article>
-    </section>
-
-    <section class="card-grid student-grid">
-      <article class="card soft-glow student-card">
-        <div class="card-heading">
-          <h2><i class="fa-solid fa-clipboard-check"></i> Mark Attendance</h2>
-          <p>Mark attendance for the current meal window only.</p>
-        </div>
-
-        <div class="meal-window" id="mealWindowPanel">
-          <p class="meal-label">Current Meal Slot</p>
-          <h3 id="currentMealLabel">Checking time...</h3>
-          <p id="mealTimeHint">Please wait</p>
-        </div>
-
-        <form id="attendanceForm" class="form-grid compact-form">
-          <input type="hidden" id="mealSlotInput" name="meal_slot" value="" />
-
-          <label>
-            Student Name
-            <input type="text" name="student_name" placeholder="Enter your name" required />
-          </label>
-
-          <label>
-            Attendance Status
-            <select name="status" required>
-              <option value="Will Eat">Will Eat</option>
-              <option value="Skip">Skip</option>
-            </select>
-          </label>
-
-          <button type="submit" class="btn-primary" id="attendanceSubmitBtn">
-            <i class="fa-solid fa-circle-check"></i>
-            Submit
-          </button>
-        </form>
-
-        <p id="attendanceMsg" class="status-text" aria-live="polite"></p>
-      </article>
-
-      <article class="card soft-glow student-card schedule-card">
-        <div class="card-heading">
-          <h2><i class="fa-solid fa-calendar-day"></i> Today's Meal Timings</h2>
-          <p>Attendance opens only during these time windows.</p>
-        </div>
-
-        <ul class="meal-timeline">
-          <li data-meal="Breakfast">
-            <span class="meal-name">Breakfast</span>
-            <span class="meal-time">08:00 AM - 10:00 AM</span>
-          </li>
-          <li data-meal="Lunch">
-            <span class="meal-name">Lunch</span>
-            <span class="meal-time">12:00 PM - 03:00 PM</span>
-          </li>
-          <li data-meal="Tea">
-            <span class="meal-name">Tea</span>
-            <span class="meal-time">05:00 PM - 06:00 PM</span>
-          </li>
-          <li data-meal="Dinner">
-            <span class="meal-name">Dinner</span>
-            <span class="meal-time">08:00 PM - 10:00 PM</span>
-          </li>
-        </ul>
-      </article>
-    </section>
-  </main>
-
-  <script src="{{ url_for('static', filename='script.js') }}"></script>
+<body class="font-sora bg-gradient-to-b from-emerald-50 via-white to-emerald-100 text-slate-900 min-h-screen">
+  <div id="root"></div>
+  <script type="module" src="{{ url_for('static', filename='student-dist/student-app.js') }}"></script>
 </body>
 </html>

@@ -428,6 +428,49 @@ const setupFinalizeDay = () => {
   });
 };
 
+const setupMenuEditor = () => {
+  const form = byId("menuUpdateForm");
+  const message = byId("menuUpdateMsg");
+  if (!form || !message) {
+    return;
+  }
+
+  const mealInput = form.querySelector('select[name="meal"]');
+  const itemsInput = form.querySelector('input[name="items"]');
+
+  const loadMenu = async () => {
+    try {
+      const menuData = await fetch("/api/admin/menu").then((r) => r.json());
+      const selectedMeal = mealInput.value || "Breakfast";
+      const items = (menuData.menus && menuData.menus[selectedMeal]) || "";
+      itemsInput.value = items;
+    } catch {
+      // Keep form usable even if menu fetch fails.
+    }
+  };
+
+  mealInput.addEventListener("change", async () => {
+    await loadMenu();
+  });
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    message.classList.remove("success", "error");
+
+    try {
+      const data = Object.fromEntries(new FormData(form).entries());
+      const result = await postJSON("/api/admin/menu", data);
+      message.textContent = result.message || "Menu saved.";
+      message.classList.add(result.success ? "success" : "error");
+    } catch {
+      message.textContent = "Unable to save menu right now.";
+      message.classList.add("error");
+    }
+  });
+
+  loadMenu();
+};
+
 const setupAdminPage = async () => {
   if (!document.body.classList.contains("admin-page")) {
     return;
@@ -439,6 +482,7 @@ const setupAdminPage = async () => {
   setupChatbot();
   setupRefresh();
   setupFinalizeDay();
+  setupMenuEditor();
 
   await loadSummary();
   await loadTableAndChart();
