@@ -29,3 +29,4 @@ frontend/node_modules/
 .pytest_cache/
 .coverage
 htmlcov/
+menu_feedback.csv

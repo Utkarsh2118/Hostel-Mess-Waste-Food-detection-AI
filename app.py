@@ -20,7 +20,10 @@ DATASET_PATH = BASE_DIR / "dataset.csv"
 ATTENDANCE_PATH = BASE_DIR / "attendance.csv"
 MENU_PATH = BASE_DIR / "menu.json"
 STUDENT_CREDENTIALS_PATH = BASE_DIR / "student_credentials.json"
+ADMIN_USERS_PATH = BASE_DIR / "admin_users.json"
+FEEDBACK_PATH = BASE_DIR / "menu_feedback.csv"
 ATTENDANCE_COLUMNS = ["timestamp", "student_name", "meal_slot", "status", "finalized"]
+FEEDBACK_COLUMNS = ["timestamp", "date", "student_name", "meal_slot", "rating", "comment"]
 DEFAULT_STUDENT_PIN = "1234"
 
 EAT_STATUSES = {"eat", "will eat", "present", "yes", "y", "1"}
@@ -59,6 +62,18 @@ DEFAULT_MENU = {
 
 ADMIN_USERNAME = "admin"
 ADMIN_PASSWORD = "admin123"
+ROLE_ORDER = {"staff": 1, "manager": 2, "superadmin": 3}
+DEFAULT_ADMIN_USERS = [
+    {"username": "admin", "password": "admin123", "role": "superadmin"},
+    {"username": "manager", "password": "manager123", "role": "manager"},
+    {"username": "staff", "password": "staff123", "role": "staff"},
+]
+MEAL_FORECAST_MULTIPLIERS = {
+    "Breakfast": 0.78,
+    "Lunch": 1.0,
+    "Tea": 0.46,
+    "Dinner": 0.92,
+}
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = "hostel-mess-secret-key"
@@ -126,6 +141,72 @@ def normalize_name(value: str) -> str:
     return str(value).strip().lower()
 
 
+def ensure_admin_users_file() -> None:
+    if ADMIN_USERS_PATH.exists():
+        return
+
+    ADMIN_USERS_PATH.write_text(json.dumps(DEFAULT_ADMIN_USERS, indent=2), encoding="utf-8")
+
+
+def load_admin_users() -> dict[str, dict[str, str]]:
+    ensure_admin_users_file()
+
+    try:
+        raw = json.loads(ADMIN_USERS_PATH.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        raw = DEFAULT_ADMIN_USERS.copy()
+
+    users = raw if isinstance(raw, list) else DEFAULT_ADMIN_USERS.copy()
+    parsed: dict[str, dict[str, str]] = {}
+
+    for user in users:
+        if not isinstance(user, dict):
+            continue
+
+        username = str(user.get("username", "")).strip()
+        password = str(user.get("password", "")).strip()
+        role = str(user.get("role", "staff")).strip().lower() or "staff"
+        if role not in ROLE_ORDER:
+            role = "staff"
+
+        if not username or not password:
+            continue
+
+        parsed[username.lower()] = {
+            "username": username,
+            "password": password,
+            "role": role,
+        }
+
+    if not parsed:
+        for user in DEFAULT_ADMIN_USERS:
+            parsed[user["username"]] = user
+
+    return parsed
+
+
+def ensure_feedback_file() -> None:
+    if FEEDBACK_PATH.exists():
+        return
+
+    pd.DataFrame(columns=FEEDBACK_COLUMNS).to_csv(FEEDBACK_PATH, index=False)
+
+
+def load_feedback() -> pd.DataFrame:
+    ensure_feedback_file()
+    feedback = pd.read_csv(FEEDBACK_PATH)
+
+    for col in FEEDBACK_COLUMNS:
+        if col not in feedback.columns:
+            feedback[col] = ""
+
+    return feedback[FEEDBACK_COLUMNS]
+
+
+def save_feedback(feedback: pd.DataFrame) -> None:
+    feedback[FEEDBACK_COLUMNS].to_csv(FEEDBACK_PATH, index=False)
+
+
 def ensure_student_credentials_file() -> None:
     if STUDENT_CREDENTIALS_PATH.exists():
         return
@@ -182,6 +263,12 @@ def load_student_credentials() -> dict[str, dict[str, str]]:
         STUDENT_CREDENTIALS_PATH.write_text(json.dumps(serializable, indent=2), encoding="utf-8")
 
     return merged
+
+
+def save_student_credentials(credentials: dict[str, dict[str, str]]) -> None:
+    serializable = list(credentials.values())
+    serializable.sort(key=lambda row: normalize_name(row.get("student_name", "")))
+    STUDENT_CREDENTIALS_PATH.write_text(json.dumps(serializable, indent=2), encoding="utf-8")
 
 
 def save_menu(menu_data: dict) -> None:
@@ -587,12 +674,65 @@ def admin_required() -> bool:
     return bool(session.get("is_admin"))
 
 
+def admin_role() -> str:
+    role = str(session.get("admin_role", "staff")).strip().lower()
+    return role if role in ROLE_ORDER else "staff"
+
+
+def admin_has_role(min_role: str) -> bool:
+    required = ROLE_ORDER.get(min_role, 999)
+    current = ROLE_ORDER.get(admin_role(), 0)
+    return current >= required
+
+
 def student_session_name() -> str:
     return str(session.get("student_name", "")).strip()
 
 
 def student_required() -> bool:
     return bool(student_session_name())
+
+
+def compute_feedback_summary(feedback: pd.DataFrame, date_key: str) -> dict:
+    if feedback.empty:
+        return {
+            "date": date_key,
+            "total_feedback": 0,
+            "avg_rating": 0,
+            "meal_breakdown": [],
+        }
+
+    day_rows = feedback[feedback["date"] == date_key].copy()
+    if day_rows.empty:
+        return {
+            "date": date_key,
+            "total_feedback": 0,
+            "avg_rating": 0,
+            "meal_breakdown": [],
+        }
+
+    day_rows["rating"] = pd.to_numeric(day_rows["rating"], errors="coerce").fillna(0)
+    meal_breakdown: list[dict] = []
+    for meal in [m["meal"] for m in MEAL_WINDOWS]:
+        meal_rows = day_rows[day_rows["meal_slot"].astype(str).str.strip().str.lower() == meal.lower()]
+        if meal_rows.empty:
+            meal_breakdown.append({"meal": meal, "count": 0, "avg_rating": 0})
+            continue
+
+        meal_breakdown.append(
+            {
+                "meal": meal,
+                "count": int(len(meal_rows)),
+                "avg_rating": round(float(meal_rows["rating"].mean()), 2),
+            }
+        )
+
+    return {
+        "date": date_key,
+        "total_feedback": int(len(day_rows)),
+        "avg_rating": round(float(day_rows["rating"].mean()), 2),
+        "meal_breakdown": meal_breakdown,
+    }
 
 
 @app.route("/")
@@ -648,6 +788,36 @@ def api_student_login():
     canonical_name = str(user.get("student_name", student_name)).strip() or student_name
     session["student_name"] = canonical_name
     return jsonify({"success": True, "student_name": canonical_name})
+
+
+@app.route("/api/student/pin/change", methods=["POST"])
+def api_student_change_pin():
+    if not student_required():
+        return jsonify({"success": False, "message": "Please login first."}), 401
+
+    data = request.get_json(silent=True) or request.form
+    old_pin = str(data.get("old_pin", "")).strip()
+    new_pin = str(data.get("new_pin", "")).strip()
+
+    if not old_pin or not new_pin:
+        return jsonify({"success": False, "message": "Both old and new PIN are required."}), 400
+    if len(new_pin) < 4:
+        return jsonify({"success": False, "message": "New PIN must be at least 4 characters."}), 400
+
+    current_name = student_session_name()
+    credentials = load_student_credentials()
+    key = normalize_name(current_name)
+    user = credentials.get(key)
+    if not user:
+        return jsonify({"success": False, "message": "Student account not found."}), 404
+    if str(user.get("pin", "")).strip() != old_pin:
+        return jsonify({"success": False, "message": "Old PIN is incorrect."}), 401
+
+    user["pin"] = new_pin
+    credentials[key] = user
+    save_student_credentials(credentials)
+
+    return jsonify({"success": True, "message": "PIN updated successfully."})
 
 
 @app.route("/api/student/logout", methods=["POST"])
@@ -820,11 +990,16 @@ def admin_login():
     if request.method == "GET":
         return render_template("login.html", error=None)
 
-    username = request.form.get("username", "")
+    username = request.form.get("username", "").strip()
     password = request.form.get("password", "")
 
-    if username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
+    users = load_admin_users()
+    user = users.get(username.lower())
+
+    if user and password == user["password"]:
         session["is_admin"] = True
+        session["admin_username"] = user["username"]
+        session["admin_role"] = user["role"]
         return redirect(url_for("admin_dashboard"))
 
     return render_template("login.html", error="Invalid username or password")
@@ -841,6 +1016,20 @@ def admin_dashboard():
     if not admin_required():
         return redirect(url_for("admin_login"))
     return render_template("admin.html")
+
+
+@app.route("/api/admin/session", methods=["GET"])
+def api_admin_session():
+    if not admin_required():
+        return jsonify({"error": "Unauthorized"}), 401
+
+    return jsonify(
+        {
+            "is_admin": True,
+            "username": str(session.get("admin_username", "admin")),
+            "role": admin_role(),
+        }
+    )
 
 
 @app.route("/api/summary")
@@ -869,6 +1058,7 @@ def api_summary():
             "suggested_food": food_kg,
             "r2": train_result["r2"],
             "pending_attendance": attendance_summary["pending_entries"],
+            "admin_role": admin_role(),
         }
     )
 
@@ -905,6 +1095,8 @@ def api_attendance_live():
 def api_admin_attendance_reset():
     if not admin_required():
         return jsonify({"error": "Unauthorized"}), 401
+    if not admin_has_role("manager"):
+        return jsonify({"error": "Forbidden"}), 403
 
     data = request.get_json(silent=True) or request.form
     date_key = str(data.get("date", "")).strip() or datetime.now().strftime("%Y-%m-%d")
@@ -953,6 +1145,8 @@ def api_admin_attendance_reset():
 def api_finalize_day():
     if not admin_required():
         return jsonify({"error": "Unauthorized"}), 401
+    if not admin_has_role("manager"):
+        return jsonify({"error": "Forbidden"}), 403
 
     data = request.get_json(silent=True) or request.form
     date_key = str(data.get("date", "")).strip() or datetime.now().strftime("%Y-%m-%d")
@@ -1042,6 +1236,8 @@ def api_get_data():
 def api_add_data():
     if not admin_required():
         return jsonify({"error": "Unauthorized"}), 401
+    if not admin_has_role("manager"):
+        return jsonify({"error": "Forbidden"}), 403
 
     data = request.get_json(silent=True) or request.form
     df = load_dataset(DATASET_PATH)
@@ -1065,6 +1261,8 @@ def api_add_data():
 def api_delete_data(row_id: int):
     if not admin_required():
         return jsonify({"error": "Unauthorized"}), 401
+    if not admin_has_role("manager"):
+        return jsonify({"error": "Forbidden"}), 403
 
     df = load_dataset(DATASET_PATH)
     if row_id < 0 or row_id >= len(df):
@@ -1098,6 +1296,39 @@ def api_predict():
         {
             "predicted_waste": predicted_waste,
             "suggested_food": suggested_food,
+            "r2": trained["r2"],
+        }
+    )
+
+
+@app.route("/api/predict/meal", methods=["POST"])
+def api_predict_by_meal():
+    if not admin_required():
+        return jsonify({"error": "Unauthorized"}), 401
+
+    data = request.get_json(silent=True) or request.form
+    students_present = int(float(data.get("students_present", 0)))
+    is_weekend = parse_bool(data.get("is_weekend", 0))
+    is_exam_period = parse_bool(data.get("is_exam_period", 0))
+    meal_slot = str(data.get("meal_slot", "Lunch")).strip() or "Lunch"
+
+    if meal_slot not in MEAL_FORECAST_MULTIPLIERS:
+        return jsonify({"success": False, "message": "Invalid meal slot."}), 400
+
+    df = load_dataset(DATASET_PATH)
+    trained = train_waste_model(df)
+    base_waste = float(
+        predict_waste(trained["model"], students_present, is_weekend, is_exam_period)
+    )
+    base_food = float(suggested_food_quantity(df, students_present))
+    multiplier = float(MEAL_FORECAST_MULTIPLIERS[meal_slot])
+
+    return jsonify(
+        {
+            "meal_slot": meal_slot,
+            "predicted_waste": round(base_waste * multiplier, 2),
+            "suggested_food": round(base_food * multiplier, 2),
+            "multiplier": multiplier,
             "r2": trained["r2"],
         }
     )
@@ -1172,10 +1403,70 @@ def api_chatbot():
         }
     )
 
+
+@app.route("/api/student/menu-feedback", methods=["POST"])
+def api_student_menu_feedback():
+    if not student_required():
+        return jsonify({"success": False, "message": "Please login first."}), 401
+
+    data = request.get_json(silent=True) or request.form
+    now = datetime.now()
+    date_key = now.strftime("%Y-%m-%d")
+    student_name = student_session_name()
+    meal_slot = str(data.get("meal_slot", "")).strip()
+    if not meal_slot:
+        active, next_meal = current_and_next_meal(now)
+        meal_slot = active["meal"] if active else next_meal["meal"]
+
+    rating_raw = data.get("rating", 0)
+    comment = str(data.get("comment", "")).strip()
+
+    try:
+        rating = int(float(rating_raw))
+    except (TypeError, ValueError):
+        rating = 0
+
+    if meal_slot not in {m["meal"] for m in MEAL_WINDOWS}:
+        return jsonify({"success": False, "message": "Invalid meal slot."}), 400
+    if rating < 1 or rating > 5:
+        return jsonify({"success": False, "message": "Rating must be between 1 and 5."}), 400
+
+    feedback = load_feedback()
+    existing_mask = (
+        (feedback["date"].astype(str).str.strip() == date_key)
+        & (feedback["student_name"].astype(str).map(normalize_name) == normalize_name(student_name))
+        & (feedback["meal_slot"].astype(str).str.strip().str.lower() == meal_slot.lower())
+    )
+
+    feedback = feedback.loc[~existing_mask, FEEDBACK_COLUMNS].copy()
+    feedback.loc[len(feedback)] = {
+        "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
+        "date": date_key,
+        "student_name": student_name,
+        "meal_slot": meal_slot,
+        "rating": rating,
+        "comment": comment,
+    }
+    save_feedback(feedback)
+
+    return jsonify({"success": True, "message": "Feedback submitted. Thank you!"})
+
+
+@app.route("/api/admin/menu-feedback", methods=["GET"])
+def api_admin_menu_feedback():
+    if not admin_required():
+        return jsonify({"error": "Unauthorized"}), 401
+
+    date_key = request.args.get("date", "").strip() or datetime.now().strftime("%Y-%m-%d")
+    feedback = load_feedback()
+    return jsonify(compute_feedback_summary(feedback, date_key))
+
 @app.route("/api/admin/menu", methods=["GET", "POST"])
 def api_admin_menu():
     if not admin_required():
         return jsonify({"error": "Unauthorized"}), 401
+    if request.method == "POST" and not admin_has_role("manager"):
+        return jsonify({"error": "Forbidden"}), 403
 
     if request.method == "GET":
         return jsonify(load_menu())
@@ -1201,6 +1492,34 @@ def api_admin_menu():
             "menu": menu_data,
         }
     )
+
+
+@app.route("/api/admin/student/pin/reset", methods=["POST"])
+def api_admin_student_pin_reset():
+    if not admin_required():
+        return jsonify({"error": "Unauthorized"}), 401
+    if not admin_has_role("manager"):
+        return jsonify({"error": "Forbidden"}), 403
+
+    data = request.get_json(silent=True) or request.form
+    student_name = str(data.get("student_name", "")).strip()
+    new_pin = str(data.get("new_pin", DEFAULT_STUDENT_PIN)).strip() or DEFAULT_STUDENT_PIN
+
+    if not student_name:
+        return jsonify({"success": False, "message": "student_name is required."}), 400
+    if len(new_pin) < 4:
+        return jsonify({"success": False, "message": "PIN must be at least 4 characters."}), 400
+
+    credentials = load_student_credentials()
+    key = normalize_name(student_name)
+
+    existing = credentials.get(key, {"student_name": student_name, "pin": DEFAULT_STUDENT_PIN})
+    existing["student_name"] = existing.get("student_name", student_name) or student_name
+    existing["pin"] = new_pin
+    credentials[key] = existing
+    save_student_credentials(credentials)
+
+    return jsonify({"success": True, "message": f"PIN reset for {existing['student_name']}"})
 
 
 if __name__ == "__main__":

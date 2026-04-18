@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 const FALLBACK_MEAL_SLOTS = [
   { meal: "Breakfast", start: 480, end: 600, label: "08:00 AM - 10:00 AM" },
@@ -118,12 +118,25 @@ export default function App() {
   const [statusChoice, setStatusChoice] = useState("Will Eat");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [isScannerOpen, setIsScannerOpen] = useState(false);
+  const [qrError, setQrError] = useState("");
+  const [qrPayload, setQrPayload] = useState("");
+  const [oldPin, setOldPin] = useState("");
+  const [newPin, setNewPin] = useState("");
+  const [isChangingPin, setIsChangingPin] = useState(false);
+  const [feedbackRating, setFeedbackRating] = useState(5);
+  const [feedbackComment, setFeedbackComment] = useState("");
+  const [isSubmittingFeedback, setIsSubmittingFeedback] = useState(false);
   const [toast, setToast] = useState({ text: "", type: "success" });
+  const videoRef = useRef(null);
+  const scanTimerRef = useRef(null);
+  const mediaStreamRef = useRef(null);
 
   const runtime = useMemo(() => computeRuntime(now, mealSlots), [now, mealSlots]);
 
   const currentMealKey = runtime.activeMeal ? runtime.activeMeal.meal : runtime.nextMeal?.meal || "Lunch";
   const currentMealCount = mealCounts[currentMealKey] || { marked: 0, attending: 0 };
+  const isMealCutoffSoon = Boolean(runtime.activeMeal && runtime.secondsRemaining > 0 && runtime.secondsRemaining <= 15 * 60);
 
   useEffect(() => {
     const ticker = window.setInterval(() => {
@@ -143,6 +156,107 @@ export default function App() {
 
     return () => window.clearTimeout(timeout);
   }, [toast]);
+
+  useEffect(() => {
+    return () => {
+      if (scanTimerRef.current) {
+        window.clearInterval(scanTimerRef.current);
+      }
+      if (mediaStreamRef.current) {
+        mediaStreamRef.current.getTracks().forEach((track) => track.stop());
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isScannerOpen) {
+      if (scanTimerRef.current) {
+        window.clearInterval(scanTimerRef.current);
+        scanTimerRef.current = null;
+      }
+      if (mediaStreamRef.current) {
+        mediaStreamRef.current.getTracks().forEach((track) => track.stop());
+        mediaStreamRef.current = null;
+      }
+      return;
+    }
+
+    async function startQrScan() {
+      if (!window.BarcodeDetector) {
+        setQrError("Camera QR scanning is not supported in this browser. Paste QR payload below.");
+        return;
+      }
+
+      try {
+        const detector = new window.BarcodeDetector({ formats: ["qr_code"] });
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+        mediaStreamRef.current = stream;
+
+        const video = videoRef.current;
+        if (!video) {
+          return;
+        }
+
+        video.srcObject = stream;
+        await video.play();
+
+        scanTimerRef.current = window.setInterval(async () => {
+          try {
+            const codes = await detector.detect(video);
+            if (!codes.length) {
+              return;
+            }
+            const rawValue = String(codes[0].rawValue || "").trim();
+            if (!rawValue) {
+              return;
+            }
+            setQrPayload(rawValue);
+            applyQrPayload(rawValue);
+            setIsScannerOpen(false);
+          } catch {
+            // Ignore intermittent detect errors while stream is stabilizing.
+          }
+        }, 650);
+      } catch {
+        setQrError("Unable to start camera scanner. Check camera permission and retry.");
+      }
+    }
+
+    startQrScan();
+  }, [isScannerOpen]);
+
+  function applyQrPayload(raw) {
+    const text = String(raw || "").trim();
+    if (!text) {
+      return;
+    }
+
+    let name = "";
+    let pin = "";
+    try {
+      const parsed = JSON.parse(text);
+      name = String(parsed.student_name || parsed.name || "").trim();
+      pin = String(parsed.pin || parsed.passcode || "").trim();
+    } catch {
+      const splitter = text.includes("|") ? "|" : text.includes(",") ? "," : "";
+      if (splitter) {
+        const parts = text.split(splitter).map((part) => String(part).trim());
+        name = parts[0] || "";
+        pin = parts[1] || "";
+      } else {
+        name = text;
+      }
+    }
+
+    if (name) {
+      setLoginName(name);
+    }
+    if (pin) {
+      setLoginPin(pin);
+    }
+    setQrError("");
+    setToast({ text: "QR data detected. Verify and login.", type: "success" });
+  }
 
   async function loadBootstrap(studentName = "") {
     const query = studentName ? `?student_name=${encodeURIComponent(studentName)}` : "";
@@ -233,7 +347,54 @@ export default function App() {
       setCurrentMealMarked(false);
       setCurrentMealStatus("");
       setCanMarkCurrentMeal(true);
+      setOldPin("");
+      setNewPin("");
       setToast({ text: "Logged out.", type: "success" });
+    }
+  }
+
+  async function onChangePin(event) {
+    event.preventDefault();
+
+    const oldTrim = oldPin.trim();
+    const newTrim = newPin.trim();
+    if (!oldTrim || !newTrim) {
+      setToast({ text: "Please provide old and new PIN.", type: "error" });
+      return;
+    }
+
+    setIsChangingPin(true);
+    try {
+      const payload = await postJSON("/api/student/pin/change", {
+        old_pin: oldTrim,
+        new_pin: newTrim,
+      });
+      setOldPin("");
+      setNewPin("");
+      setToast({ text: payload.message || "PIN updated.", type: "success" });
+    } catch (error) {
+      setToast({ text: error.message || "Unable to update PIN.", type: "error" });
+    } finally {
+      setIsChangingPin(false);
+    }
+  }
+
+  async function onSubmitFeedback(event) {
+    event.preventDefault();
+
+    setIsSubmittingFeedback(true);
+    try {
+      const payload = await postJSON("/api/student/menu-feedback", {
+        meal_slot: currentMealKey,
+        rating: Number(feedbackRating),
+        comment: feedbackComment,
+      });
+      setFeedbackComment("");
+      setToast({ text: payload.message || "Feedback submitted.", type: "success" });
+    } catch (error) {
+      setToast({ text: error.message || "Unable to submit feedback.", type: "error" });
+    } finally {
+      setIsSubmittingFeedback(false);
     }
   }
 
@@ -369,6 +530,48 @@ export default function App() {
                   required
                 />
               </label>
+
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-600">QR Login Assist</p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setQrError("");
+                      setIsScannerOpen((prev) => !prev);
+                    }}
+                    className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                  >
+                    {isScannerOpen ? "Stop Scanner" : "Scan QR"}
+                  </button>
+                </div>
+
+                {isScannerOpen && (
+                  <div className="mt-2 overflow-hidden rounded-xl border border-slate-300 bg-black">
+                    <video ref={videoRef} className="h-48 w-full object-cover" muted playsInline />
+                  </div>
+                )}
+
+                <label className="mt-2 block">
+                  <span className="mb-1 block text-xs font-semibold text-slate-600">QR Payload (student|pin or JSON)</span>
+                  <input
+                    type="text"
+                    value={qrPayload}
+                    onChange={(event) => setQrPayload(event.target.value)}
+                    placeholder="Aarav Sharma|1234"
+                    className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-emerald-500"
+                  />
+                </label>
+
+                <button
+                  type="button"
+                  onClick={() => applyQrPayload(qrPayload)}
+                  className="mt-2 rounded-lg bg-slate-800 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-700"
+                >
+                  Apply QR Data
+                </button>
+                {qrError && <p className="mt-2 text-xs font-semibold text-rose-600">{qrError}</p>}
+              </div>
 
               <button
                 type="submit"
@@ -510,6 +713,15 @@ export default function App() {
               </div>
             )}
 
+            {isMealCutoffSoon && runtime.activeMeal && (
+              <div className="mb-4 rounded-2xl border border-rose-200 bg-rose-50 p-3">
+                <p className="text-sm font-bold text-rose-800">Meal cutoff reminder</p>
+                <p className="text-sm text-rose-700">
+                  {runtime.activeMeal.meal} closes in {formatDuration(runtime.secondsRemaining)}. Mark now.
+                </p>
+              </div>
+            )}
+
             <form onSubmit={onSubmitAttendance} className="space-y-4">
               <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-3">
                 <p className="text-xs font-semibold uppercase tracking-[0.16em] text-emerald-700">Logged In As</p>
@@ -642,6 +854,80 @@ export default function App() {
               </div>
             ))}
           </div>
+        </section>
+
+        <section className="mt-4 grid gap-4 lg:grid-cols-2">
+          <article className="rounded-3xl border border-emerald-200 bg-white p-4 shadow-card sm:p-5">
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-700">Security</p>
+            <h3 className="mt-1 text-lg font-extrabold text-slate-900">Change PIN</h3>
+            <form onSubmit={onChangePin} className="mt-3 space-y-3">
+              <label className="block">
+                <span className="mb-1 block text-sm font-semibold text-slate-700">Old PIN</span>
+                <input
+                  type="password"
+                  value={oldPin}
+                  onChange={(event) => setOldPin(event.target.value)}
+                  className="w-full rounded-xl border border-slate-300 px-3 py-2 outline-none focus:border-emerald-500"
+                  required
+                />
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-sm font-semibold text-slate-700">New PIN</span>
+                <input
+                  type="password"
+                  value={newPin}
+                  onChange={(event) => setNewPin(event.target.value)}
+                  className="w-full rounded-xl border border-slate-300 px-3 py-2 outline-none focus:border-emerald-500"
+                  required
+                />
+              </label>
+              <button
+                type="submit"
+                disabled={isChangingPin}
+                className="w-full rounded-xl bg-slate-900 px-4 py-3 text-sm font-bold text-white disabled:opacity-60"
+              >
+                {isChangingPin ? "Updating..." : "Update PIN"}
+              </button>
+            </form>
+          </article>
+
+          <article className="rounded-3xl border border-emerald-200 bg-white p-4 shadow-card sm:p-5">
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-700">Meal Feedback</p>
+            <h3 className="mt-1 text-lg font-extrabold text-slate-900">Rate {currentMealKey}</h3>
+            <form onSubmit={onSubmitFeedback} className="mt-3 space-y-3">
+              <label className="block">
+                <span className="mb-1 block text-sm font-semibold text-slate-700">Rating</span>
+                <select
+                  value={feedbackRating}
+                  onChange={(event) => setFeedbackRating(Number(event.target.value))}
+                  className="w-full rounded-xl border border-slate-300 px-3 py-2 outline-none focus:border-emerald-500"
+                >
+                  {[5, 4, 3, 2, 1].map((score) => (
+                    <option key={score} value={score}>
+                      {score} Star{score > 1 ? "s" : ""}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-sm font-semibold text-slate-700">Comment (optional)</span>
+                <textarea
+                  rows={3}
+                  value={feedbackComment}
+                  onChange={(event) => setFeedbackComment(event.target.value)}
+                  placeholder="What should improve?"
+                  className="w-full rounded-xl border border-slate-300 px-3 py-2 outline-none focus:border-emerald-500"
+                />
+              </label>
+              <button
+                type="submit"
+                disabled={isSubmittingFeedback}
+                className="w-full rounded-xl bg-emerald-600 px-4 py-3 text-sm font-bold text-white disabled:opacity-60"
+              >
+                {isSubmittingFeedback ? "Submitting..." : "Submit Feedback"}
+              </button>
+            </form>
+          </article>
         </section>
 
         <section className="mt-4 rounded-3xl border border-emerald-300 bg-gradient-to-r from-emerald-700 to-emerald-500 p-4 text-white shadow-card sm:p-5">

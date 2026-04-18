@@ -169,7 +169,7 @@ async function postJSON(url, payload) {
   return body;
 }
 
-function AppShell({ children }) {
+function AppShell({ children, adminSession }) {
   const [collapsed, setCollapsed] = useState(window.innerWidth < 900);
   const [mobileOpen, setMobileOpen] = useState(false);
   const location = useLocation();
@@ -243,8 +243,8 @@ function AppShell({ children }) {
               <div className="grid h-10 w-10 place-items-center rounded-full bg-emerald-500 font-semibold text-white">AD</div>
               {!collapsed && (
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-semibold">Admin Desk</p>
-                  <p className="truncate text-xs text-slate-400">Mess Supervisor</p>
+                  <p className="truncate text-sm font-semibold">{adminSession.username || "Admin Desk"}</p>
+                  <p className="truncate text-xs uppercase text-slate-400">{adminSession.role || "staff"}</p>
                 </div>
               )}
             </div>
@@ -281,7 +281,7 @@ function AppShell({ children }) {
   );
 }
 
-function DashboardPage({ summary, records, attendance, menuData, onSaveMenu, onRefresh, onFinalize, onResetAttendance }) {
+function DashboardPage({ summary, records, attendance, menuData, feedbackSummary, adminSession, onSaveMenu, onRefresh, onFinalize, onResetAttendance, onResetPin }) {
   const chartData = useMemo(() => {
     const rows = records.length ? records : fallbackRecords;
     return rows.slice(-7).map((row, index) => ({
@@ -320,6 +320,9 @@ function DashboardPage({ summary, records, attendance, menuData, onSaveMenu, onR
     meal_slot: "All",
   });
   const [resetMsg, setResetMsg] = useState("");
+  const [pinResetForm, setPinResetForm] = useState({ student_name: "", new_pin: "1234" });
+  const [pinResetMsg, setPinResetMsg] = useState("");
+  const canManage = ["manager", "superadmin"].includes(adminSession.role);
 
   useEffect(() => {
     const firstMeal = menuData?.menus ? Object.keys(menuData.menus)[0] : "Breakfast";
@@ -430,6 +433,7 @@ function DashboardPage({ summary, records, attendance, menuData, onSaveMenu, onR
           <button
             type="button"
             onClick={onFinalize}
+            disabled={!canManage}
             className="inline-flex items-center gap-2 rounded-full bg-[#16a34a] px-4 py-2 text-sm font-semibold text-white hover:brightness-95"
           >
             <CalendarCheck size={16} />
@@ -463,6 +467,10 @@ function DashboardPage({ summary, records, attendance, menuData, onSaveMenu, onR
           className="grid gap-3 md:grid-cols-2"
           onSubmit={async (event) => {
             event.preventDefault();
+            if (!canManage) {
+              setMenuMsg("Only manager/superadmin can update menu.");
+              return;
+            }
             try {
               const payload = await onSaveMenu({ meal: menuMeal, items: menuItems });
               setMenuMsg(payload.message || "Menu updated.");
@@ -508,6 +516,28 @@ function DashboardPage({ summary, records, attendance, menuData, onSaveMenu, onR
         </form>
         {menuData?.updated_at && <p className="mt-2 text-xs text-slate-500">Last updated: {menuData.updated_at}</p>}
         {menuMsg && <p className="mt-1 text-sm font-semibold text-emerald-700">{menuMsg}</p>}
+      </div>
+
+      <div className="admin-card bg-white p-4">
+        <h3 className="mb-1 text-lg font-semibold">Menu Feedback Ratings</h3>
+        <p className="mb-3 text-sm text-slate-500">Daily student ratings for each meal.</p>
+        <div className="mb-3 flex flex-wrap gap-2">
+          <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-700">
+            Avg Rating: {Number(feedbackSummary.avg_rating || 0).toFixed(2)} / 5
+          </span>
+          <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">
+            Responses: {feedbackSummary.total_feedback || 0}
+          </span>
+        </div>
+        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+          {(feedbackSummary.meal_breakdown || []).map((meal) => (
+            <div key={meal.meal} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+              <p className="text-sm font-bold text-slate-900">{meal.meal}</p>
+              <p className="text-xs text-slate-600">{meal.count || 0} reviews</p>
+              <p className="mt-1 text-sm font-semibold text-emerald-700">{Number(meal.avg_rating || 0).toFixed(2)} / 5</p>
+            </div>
+          ))}
+        </div>
       </div>
 
       <div className="admin-card bg-white p-4">
@@ -582,6 +612,59 @@ function DashboardPage({ summary, records, attendance, menuData, onSaveMenu, onR
         </form>
         {resetMsg && <p className="mt-2 text-sm font-semibold text-slate-700">{resetMsg}</p>}
       </div>
+
+      <div className="admin-card bg-white p-4">
+        <h3 className="mb-1 text-lg font-semibold">Forgot PIN Reset</h3>
+        <p className="mb-3 text-sm text-slate-500">Reset student PIN when they forget credentials.</p>
+        <form
+          className="grid gap-3 md:grid-cols-2"
+          onSubmit={async (event) => {
+            event.preventDefault();
+            if (!canManage) {
+              setPinResetMsg("Only manager/superadmin can reset PIN.");
+              return;
+            }
+            if (!pinResetForm.student_name) {
+              setPinResetMsg("Please select a student.");
+              return;
+            }
+            try {
+              const payload = await onResetPin(pinResetForm);
+              setPinResetMsg(payload.message || "PIN reset completed.");
+            } catch (error) {
+              setPinResetMsg(error.message || "Unable to reset PIN.");
+            }
+          }}
+        >
+          <label>
+            <span className="mb-1 block text-sm font-semibold text-slate-700">Student</span>
+            <input
+              list="admin-student-names"
+              value={pinResetForm.student_name}
+              onChange={(e) => setPinResetForm((prev) => ({ ...prev, student_name: e.target.value }))}
+              placeholder="Select student"
+              className="w-full rounded-xl border border-slate-300 px-3 py-2 outline-none focus:border-emerald-500"
+              required
+            />
+          </label>
+          <label>
+            <span className="mb-1 block text-sm font-semibold text-slate-700">New PIN</span>
+            <input
+              value={pinResetForm.new_pin}
+              onChange={(e) => setPinResetForm((prev) => ({ ...prev, new_pin: e.target.value }))}
+              className="w-full rounded-xl border border-slate-300 px-3 py-2 outline-none focus:border-emerald-500"
+              required
+            />
+          </label>
+          <button
+            type="submit"
+            className="inline-flex items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-3 font-semibold text-white hover:bg-slate-800 md:col-span-2"
+          >
+            Reset PIN
+          </button>
+        </form>
+        {pinResetMsg && <p className="mt-2 text-sm font-semibold text-slate-700">{pinResetMsg}</p>}
+      </div>
     </div>
   );
 }
@@ -600,7 +683,7 @@ function Toggle({ value, onChange, label }) {
   );
 }
 
-function AddDataPage({ records, onAdded, onDelete }) {
+function AddDataPage({ records, onAdded, onDelete, canManage }) {
   const [form, setForm] = useState({
     students_present: "",
     prepared_kg: "",
@@ -643,6 +726,10 @@ function AddDataPage({ records, onAdded, onDelete }) {
 
   const submit = async (event) => {
     event.preventDefault();
+    if (!canManage) {
+      setToast("Only manager/superadmin can add records");
+      return;
+    }
     if (!validate()) return;
 
     await postJSON("/api/data/add", {
@@ -743,6 +830,10 @@ function AddDataPage({ records, onAdded, onDelete }) {
                         <button
                           type="button"
                           onClick={async () => {
+                            if (!canManage) {
+                              setToast("Only manager/superadmin can delete records");
+                              return;
+                            }
                             await onDelete(row.id);
                             setConfirmDeleteId(null);
                           }}
@@ -822,6 +913,8 @@ function ScenarioCard({ scenario, onChange, onPredict, loading }) {
 function PredictionPage() {
   const [scenarioA, setScenarioA] = useState({ students_present: 120, is_weekend: false, is_exam_period: false });
   const [scenarioB, setScenarioB] = useState({ students_present: 120, is_weekend: true, is_exam_period: false });
+  const [mealSlotA, setMealSlotA] = useState("Lunch");
+  const [mealSlotB, setMealSlotB] = useState("Dinner");
   const [showCompare, setShowCompare] = useState(false);
   const [loadingA, setLoadingA] = useState(false);
   const [loadingB, setLoadingB] = useState(false);
@@ -835,10 +928,18 @@ function PredictionPage() {
         students_present: Number(scenario.students_present),
         is_weekend: scenario.is_weekend ? 1 : 0,
         is_exam_period: scenario.is_exam_period ? 1 : 0,
+        meal_slot: setResult === setResultA ? mealSlotA : mealSlotB,
+      });
+
+      const mealPayload = await postJSON("/api/predict/meal", {
+        students_present: Number(scenario.students_present),
+        is_weekend: scenario.is_weekend ? 1 : 0,
+        is_exam_period: scenario.is_exam_period ? 1 : 0,
+        meal_slot: setResult === setResultA ? mealSlotA : mealSlotB,
       });
 
       const uncertainty = Math.max(5, Math.min(95, 100 - Number(payload.r2 || 0) * 100));
-      setResult({ ...payload, uncertainty });
+      setResult({ ...mealPayload, uncertainty });
     } finally {
       setLoading(false);
     }
@@ -884,6 +985,14 @@ function PredictionPage() {
 
       <div className={`grid gap-4 ${showCompare ? "lg:grid-cols-2" : "max-w-[600px]"}`}>
         <div className="space-y-4">
+          <label className="block rounded-xl border border-slate-200 bg-white p-3">
+            <span className="mb-1 block text-sm font-semibold text-slate-700">Meal Slot</span>
+            <select value={mealSlotA} onChange={(e) => setMealSlotA(e.target.value)} className="w-full rounded-xl border border-slate-300 px-3 py-2">
+              {["Breakfast", "Lunch", "Tea", "Dinner"].map((meal) => (
+                <option key={meal} value={meal}>{meal}</option>
+              ))}
+            </select>
+          </label>
           <ScenarioCard
             scenario={scenarioA}
             onChange={setScenarioA}
@@ -895,6 +1004,14 @@ function PredictionPage() {
 
         {showCompare && (
           <div className="space-y-4">
+            <label className="block rounded-xl border border-slate-200 bg-white p-3">
+              <span className="mb-1 block text-sm font-semibold text-slate-700">Meal Slot</span>
+              <select value={mealSlotB} onChange={(e) => setMealSlotB(e.target.value)} className="w-full rounded-xl border border-slate-300 px-3 py-2">
+                {["Breakfast", "Lunch", "Tea", "Dinner"].map((meal) => (
+                  <option key={meal} value={meal}>{meal}</option>
+                ))}
+              </select>
+            </label>
             <ScenarioCard
               scenario={scenarioB}
               onChange={setScenarioB}
@@ -1043,16 +1160,22 @@ export default function AppAdmin() {
   const [records, setRecords] = useState([]);
   const [attendance, setAttendance] = useState(fallbackAttendance);
   const [menuData, setMenuData] = useState({ menus: {}, updated_at: "" });
+  const [feedbackSummary, setFeedbackSummary] = useState({ total_feedback: 0, avg_rating: 0, meal_breakdown: [] });
+  const [adminSession, setAdminSession] = useState({ username: "Admin", role: "staff" });
   const [modalOpen, setModalOpen] = useState(false);
   const [toast, setToast] = useState("");
 
+  const canManage = ["manager", "superadmin"].includes(adminSession.role);
+
   const refreshAll = async () => {
     try {
-      const [summaryPayload, recordsPayload, attendancePayload, menuPayload] = await Promise.all([
+      const [summaryPayload, recordsPayload, attendancePayload, menuPayload, feedbackPayload, sessionPayload] = await Promise.all([
         getJSON("/api/summary"),
         getJSON("/api/data"),
         getJSON("/api/attendance/live"),
         getJSON("/api/admin/menu"),
+        getJSON("/api/admin/menu-feedback"),
+        getJSON("/api/admin/session"),
       ]);
       setSummary(summaryPayload);
       setRecords(
@@ -1065,10 +1188,13 @@ export default function AppAdmin() {
       );
       setAttendance(attendancePayload || fallbackAttendance);
       setMenuData(menuPayload || { menus: {}, updated_at: "" });
+      setFeedbackSummary(feedbackPayload || { total_feedback: 0, avg_rating: 0, meal_breakdown: [] });
+      setAdminSession(sessionPayload || { username: "Admin", role: "staff" });
     } catch {
       setSummary(defaultStats);
       setRecords(fallbackRecords);
       setAttendance(fallbackAttendance);
+      setFeedbackSummary({ total_feedback: 0, avg_rating: 0, meal_breakdown: [] });
     }
   };
 
@@ -1119,8 +1245,18 @@ export default function AppAdmin() {
     return payload;
   };
 
+  const resetStudentPin = async ({ student_name, new_pin }) => {
+    const payload = await postJSON("/api/admin/student/pin/reset", {
+      student_name,
+      new_pin,
+    });
+    setToast(payload.message || "PIN reset");
+    await refreshAll();
+    return payload;
+  };
+
   return (
-    <AppShell>
+    <AppShell adminSession={adminSession}>
       {toast && (
         <div className="fixed right-4 top-20 z-50 rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white shadow-xl">
           {toast}
@@ -1136,16 +1272,19 @@ export default function AppAdmin() {
               records={records}
               attendance={attendance}
               menuData={menuData}
+              feedbackSummary={feedbackSummary}
+              adminSession={adminSession}
               onSaveMenu={saveMenu}
               onRefresh={refreshAll}
               onFinalize={() => setModalOpen(true)}
               onResetAttendance={resetAttendance}
+              onResetPin={resetStudentPin}
             />
           }
         />
         <Route
           path="/add-data"
-          element={<AddDataPage records={records} onAdded={refreshAll} onDelete={deleteRecord} />}
+          element={<AddDataPage records={records} onAdded={refreshAll} onDelete={deleteRecord} canManage={canManage} />}
         />
         <Route path="/prediction" element={<PredictionPage />} />
         <Route path="/chatbot" element={<ChatbotPage />} />
